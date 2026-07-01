@@ -6,14 +6,6 @@ import { parseTodosFromEntry } from './todo-parser';
 
 export type NavSection = 'new' | 'notes' | 'todos' | 'timeline' | 'images' | 'settings' | 'help';
 export type TodoStatus = 'todo' | 'done';
-export type ActivityType =
-  | 'note_created'
-  | 'note_updated'
-  | 'entry_created'
-  | 'todo_created'
-  | 'todo_completed'
-  | 'todo_deleted';
-
 export type Note = {
   id: string;
   title: string;
@@ -40,16 +32,6 @@ export type Todo = {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
-};
-
-export type Activity = {
-  id: string;
-  type: ActivityType;
-  noteId?: string;
-  entryId?: string;
-  todoId?: string;
-  title: string;
-  createdAt: string;
 };
 
 export type ShortcutAction = 'save' | 'edit' | 'delete' | 'undo';
@@ -81,7 +63,6 @@ type AppState = {
   notes: Note[];
   entries: NoteEntry[];
   todos: Todo[];
-  activities: Activity[];
   recentNoteIds: string[];
   shortcuts: ShortcutConfig;
   theme: ThemeMode;
@@ -114,7 +95,6 @@ export type AppStateSnapshot = Pick<
   | 'notes'
   | 'entries'
   | 'todos'
-  | 'activities'
   | 'recentNoteIds'
   | 'shortcuts'
   | 'theme'
@@ -138,7 +118,6 @@ export const useAppStore = create<AppState>()(
       notes: [],
       entries: [],
       todos: [],
-      activities: [],
       recentNoteIds: [],
       shortcuts: defaultShortcuts,
       theme: defaultTheme,
@@ -162,7 +141,6 @@ export const useAppStore = create<AppState>()(
           notes: snapshot.notes,
           entries: snapshot.entries,
           todos: snapshot.todos,
-          activities: snapshot.activities,
           recentNoteIds: snapshot.recentNoteIds,
           shortcuts: {
             ...defaultShortcuts,
@@ -183,12 +161,8 @@ export const useAppStore = create<AppState>()(
           return {
             activeSection: 'notes',
             selectedNoteId: note.id,
-            recentNoteIds: [note.id, ...state.recentNoteIds.filter((id) => id !== note.id)].slice(0, 5),
+            recentNoteIds: [note.id, ...state.recentNoteIds.filter((id) => id !== note.id)].slice(0, 10),
             notes: [note, ...state.notes],
-            activities: [
-              createActivity('note_created', 'Created note: Untitled Note', now, { noteId: note.id }),
-              ...state.activities,
-            ],
           };
         }),
       createNoteWithEntry: (content) =>
@@ -222,32 +196,17 @@ export const useAppStore = create<AppState>()(
           return {
             activeSection: 'notes',
             selectedNoteId: note.id,
-            recentNoteIds: [note.id, ...state.recentNoteIds.filter((id) => id !== note.id)].slice(0, 5),
+            recentNoteIds: [note.id, ...state.recentNoteIds.filter((id) => id !== note.id)].slice(0, 10),
             notes: [note, ...state.notes],
             entries: [entry, ...state.entries],
             todos: [...todos, ...state.todos],
-            activities: [
-              createActivity('note_created', `Created note: ${title}`, now, { noteId: note.id }),
-              createActivity('entry_created', `Added entry to: ${title}`, now, {
-                noteId: note.id,
-                entryId: entry.id,
-              }),
-              ...todos.map((todo) =>
-                createActivity('todo_created', `Created ToDo: ${todo.title}`, now, {
-                  noteId: note.id,
-                  entryId: entry.id,
-                  todoId: todo.id,
-                }),
-              ),
-              ...state.activities,
-            ],
           };
         }),
       selectNote: (noteId) =>
         set((state) => ({
           selectedNoteId: noteId,
           activeSection: 'notes',
-          recentNoteIds: [noteId, ...state.recentNoteIds.filter((id) => id !== noteId)].slice(0, 5),
+          recentNoteIds: [noteId, ...state.recentNoteIds.filter((id) => id !== noteId)].slice(0, 10),
         })),
       updateNoteTitle: (noteId, title) =>
         set((state) => {
@@ -284,12 +243,6 @@ export const useAppStore = create<AppState>()(
               } as const,
               ...state.deletedStack,
             ].slice(0, 20),
-            activities: [
-              createActivity('note_updated', `Deleted note: ${note.title || 'Untitled Note'}`, now, {
-                noteId,
-              }),
-              ...state.activities,
-            ],
           };
         }),
       addEntry: (noteId, content) =>
@@ -319,17 +272,6 @@ export const useAppStore = create<AppState>()(
             entries: [...state.entries, entry],
             todos: [...todos, ...state.todos],
             notes: state.notes.map((note) => (note.id === noteId ? { ...note, updatedAt: now } : note)),
-            activities: [
-              createActivity('entry_created', `Added entry to: ${noteTitle}`, now, { noteId, entryId: entry.id }),
-              ...todos.map((todo) =>
-                createActivity('todo_created', `Created ToDo: ${todo.title}`, now, {
-                  noteId,
-                  entryId: entry.id,
-                  todoId: todo.id,
-                }),
-              ),
-              ...state.activities,
-            ],
           };
         }),
       updateEntry: (entryId, content) =>
@@ -377,22 +319,6 @@ export const useAppStore = create<AppState>()(
             notes: state.notes.map((note) =>
               note.id === existingEntry.noteId ? { ...note, updatedAt: now } : note,
             ),
-            activities: [
-              createActivity('note_updated', `Updated note: ${noteTitle}`, now, {
-                noteId: existingEntry.noteId,
-                entryId,
-              }),
-              ...updatedTodos
-                .filter((todo) => !existingTodos.some((existingTodo) => existingTodo.id === todo.id))
-                .map((todo) =>
-                  createActivity('todo_created', `Created ToDo: ${todo.title}`, now, {
-                    noteId: existingEntry.noteId,
-                    entryId,
-                    todoId: todo.id,
-                  }),
-                ),
-              ...state.activities,
-            ],
           };
         }),
       deleteEntry: (entryId) =>
@@ -419,13 +345,6 @@ export const useAppStore = create<AppState>()(
               } as const,
               ...state.deletedStack,
             ].slice(0, 20),
-            activities: [
-              createActivity('note_updated', `Deleted entry from: ${noteTitle}`, now, {
-                noteId: entry.noteId,
-                entryId,
-              }),
-              ...state.activities,
-            ],
           };
         }),
       createStandaloneTodo: (title) =>
@@ -442,20 +361,11 @@ export const useAppStore = create<AppState>()(
           return {
             activeSection: 'todos',
             todos: [todo, ...state.todos],
-            activities: [
-              createActivity('todo_created', `Created ToDo: ${todo.title}`, now, { todoId: todo.id }),
-              ...state.activities,
-            ],
           };
         }),
       toggleTodo: (todoId, done) =>
         set((state) => {
           const now = new Date().toISOString();
-          const todo = state.todos.find((item) => item.id === todoId);
-          const activity =
-            todo && done
-              ? [createActivity('todo_completed', `Completed ToDo: ${todo.title}`, now, { todoId })]
-              : [];
           return {
             todos: state.todos.map((item) =>
               item.id === todoId
@@ -467,7 +377,6 @@ export const useAppStore = create<AppState>()(
                   }
                 : item,
             ),
-            activities: [...activity, ...state.activities],
           };
         }),
       deleteTodo: (todoId) =>
@@ -486,7 +395,6 @@ export const useAppStore = create<AppState>()(
               } as const,
               ...state.deletedStack,
             ].slice(0, 20),
-            activities: [createActivity('todo_deleted', `Deleted ToDo: ${todo.title}`, now, { todoId }), ...state.activities],
           };
         }),
       undoLastDelete: () =>
@@ -512,12 +420,6 @@ export const useAppStore = create<AppState>()(
               activeSection: 'notes',
               recentNoteIds: snapshot.recentNoteIds,
               deletedStack: rest,
-              activities: [
-                createActivity('note_updated', `Restored note: ${snapshot.note.title || 'Untitled Note'}`, now, {
-                  noteId: snapshot.note.id,
-                }),
-                ...state.activities,
-              ],
             };
           }
 
@@ -531,13 +433,6 @@ export const useAppStore = create<AppState>()(
               selectedNoteId: snapshot.entry.noteId,
               activeSection: 'notes',
               deletedStack: rest,
-              activities: [
-                createActivity('note_updated', 'Restored entry', now, {
-                  noteId: snapshot.entry.noteId,
-                  entryId: snapshot.entry.id,
-                }),
-                ...state.activities,
-              ],
             };
           }
 
@@ -545,12 +440,6 @@ export const useAppStore = create<AppState>()(
             todos: [snapshot.todo, ...state.todos.filter((todo) => todo.id !== snapshot.todo.id)],
             activeSection: 'todos',
             deletedStack: rest,
-            activities: [
-              createActivity('todo_created', `Restored ToDo: ${snapshot.todo.title}`, now, {
-                todoId: snapshot.todo.id,
-              }),
-              ...state.activities,
-            ],
           };
         }),
     }),
@@ -559,7 +448,10 @@ export const useAppStore = create<AppState>()(
       storage: createJSONStorage(() => appStorage),
       merge: (persistedState, currentState) => ({
         ...currentState,
-        ...(persistedState as Partial<AppState>),
+        ...(() => {
+          const { activities: _activities, ...rest } = persistedState as Partial<AppState> & { activities?: unknown };
+          return rest;
+        })(),
         shortcuts: {
           ...defaultShortcuts,
           ...(persistedState as Partial<AppState>)?.shortcuts,
@@ -579,26 +471,10 @@ export function snapshotAppState(state: AppState): AppStateSnapshot {
     notes: state.notes,
     entries: state.entries,
     todos: state.todos,
-    activities: state.activities,
     recentNoteIds: state.recentNoteIds,
     shortcuts: state.shortcuts,
     theme: state.theme,
     deletedStack: state.deletedStack,
-  };
-}
-
-function createActivity(
-  type: ActivityType,
-  title: string,
-  createdAt: string,
-  refs: Pick<Activity, 'noteId' | 'entryId' | 'todoId'> = {},
-): Activity {
-  return {
-    id: createId('activity'),
-    type,
-    title,
-    createdAt,
-    ...refs,
   };
 }
 

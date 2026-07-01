@@ -10,6 +10,7 @@ use tauri::{AppHandle, Manager};
 use image::{imageops::FilterType, ImageFormat};
 
 const STATE_FILE_NAME: &str = "state.json";
+const DELETED_STACK_FILE_NAME: &str = "deleted-stack.json";
 const SEARCH_INDEX_FILE_NAME: &str = "search-index.json";
 const NOTES_DIR_NAME: &str = "notes";
 const IMAGES_DIR_NAME: &str = "images";
@@ -36,6 +37,25 @@ struct ImageAttachmentInfo {
     path: String,
     size: u64,
     modified_at: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeletedSnapshot {
+    #[serde(rename = "type")]
+    snapshot_type: String,
+    #[serde(default)]
+    note: Option<Value>,
+    #[serde(default)]
+    entry: Option<Value>,
+    #[serde(default)]
+    todo: Option<Value>,
+    #[serde(default)]
+    entries: Vec<Value>,
+    #[serde(default)]
+    todos: Vec<Value>,
+    #[serde(default)]
+    recent_note_ids: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -116,10 +136,11 @@ fn write_app_state(app: AppHandle, value: String) -> Result<(), String> {
     ensure_legacy_image_migration(&storage_root)?;
 
     let parsed = serde_json::from_str::<Value>(&value).map_err(|error| error.to_string())?;
-    let (root_state, note_bundles) = split_app_state(&parsed);
+    let (root_state, note_bundles, deleted_stack) = split_app_state(&parsed);
     write_json_file(&state_path, &root_state)?;
     write_note_bundles(&storage_root, &note_bundles)?;
     write_search_index(&storage_root, &note_bundles)?;
+    write_deleted_stack(&storage_root, &deleted_stack)?;
     cleanup_orphan_attachments(&app, &value)
 }
 
@@ -184,6 +205,7 @@ fn set_storage_path(app: AppHandle, storage_path: String) -> Result<StorageInfo,
     let old_storage_root = active_storage_root(&app)?;
     let old_attachment_dir = legacy_images_dir_for_storage_root(&old_storage_root);
     let old_notes_dir = notes_dir_for_storage_root(&old_storage_root);
+    let old_deleted_stack = deleted_stack_file_path(&old_storage_root);
     let next_custom_path = normalize_custom_path(&storage_path);
     let config_path = storage_config_path(&app)?;
 
@@ -221,6 +243,14 @@ fn set_storage_path(app: AppHandle, storage_path: String) -> Result<StorageInfo,
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         fs::copy(&old_search_index, &new_search_index).map_err(|error| error.to_string())?;
+    }
+
+    let new_deleted_stack = deleted_stack_file_path(&new_storage_root);
+    if old_deleted_stack.exists() && old_deleted_stack != new_deleted_stack && !new_deleted_stack.exists() {
+        if let Some(parent) = new_deleted_stack.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        fs::copy(&old_deleted_stack, &new_deleted_stack).map_err(|error| error.to_string())?;
     }
 
     storage_info(&app)
@@ -441,6 +471,10 @@ fn state_file_path_from_root(storage_root: &Path) -> PathBuf {
     storage_root.join(STATE_FILE_NAME)
 }
 
+fn deleted_stack_file_path(storage_root: &Path) -> PathBuf {
+    storage_root.join(DELETED_STACK_FILE_NAME)
+}
+
 fn notes_dir_for_storage_root(storage_root: &Path) -> PathBuf {
     storage_root.join(NOTES_DIR_NAME)
 }
@@ -473,10 +507,11 @@ fn migrate_legacy_storage_file(app: &AppHandle, legacy_state_path: &Path) -> Res
 
     let state_content = fs::read_to_string(legacy_state_path).map_err(|error| error.to_string())?;
     let parsed = serde_json::from_str::<Value>(&state_content).map_err(|error| error.to_string())?;
-    let (root_state, note_bundles) = split_app_state(&parsed);
+    let (root_state, note_bundles, deleted_stack) = split_app_state(&parsed);
 
     write_json_file(&state_file_path_from_root(&storage_root), &root_state)?;
     write_note_bundles(&storage_root, &note_bundles)?;
+    write_deleted_stack(&storage_root, &deleted_stack)?;
 
     let legacy_root = legacy_state_path.parent().unwrap_or(legacy_state_path);
     let legacy_notes_dir = notes_dir_for_storage_root(legacy_root);
@@ -487,6 +522,15 @@ fn migrate_legacy_storage_file(app: &AppHandle, legacy_state_path: &Path) -> Res
     let legacy_images_dir = legacy_images_dir_for_storage_root(legacy_root);
     if legacy_images_dir.exists() {
         copy_dir_recursive(&legacy_images_dir, &images_dir_for_storage_root(&storage_root))?;
+    }
+
+    let legacy_deleted_stack = deleted_stack_file_path(legacy_root);
+    if legacy_deleted_stack.exists() {
+        let new_deleted_stack = deleted_stack_file_path(&storage_root);
+        if let Some(parent) = new_deleted_stack.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        fs::copy(&legacy_deleted_stack, &new_deleted_stack).map_err(|error| error.to_string())?;
     }
 
     Ok(())
@@ -532,6 +576,20 @@ fn ensure_storage_layout(storage_root: &Path) -> Result<(), String> {
     fs::create_dir_all(notes_dir_for_storage_root(storage_root)).map_err(|error| error.to_string())?;
     fs::create_dir_all(images_dir_for_storage_root(storage_root)).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn write_deleted_stack(storage_root: &Path, deleted_stack: &[DeletedSnapshot]) -> Result<(), String> {
+    write_json_file(&deleted_stack_file_path(storage_root), &deleted_stack)
+}
+
+fn read_deleted_stack(storage_root: &Path) -> Result<Vec<DeletedSnapshot>, String> {
+    let path = deleted_stack_file_path(storage_root);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str::<Vec<DeletedSnapshot>>(&content).map_err(|error| error.to_string())
 }
 
 fn write_note_bundles(storage_root: &Path, note_bundles: &[NoteBundle]) -> Result<(), String> {
@@ -611,23 +669,33 @@ fn read_full_app_state(app: &AppHandle, state_path: &Path) -> Result<String, Str
     let root_value = serde_json::from_str::<Value>(&root_content).map_err(|error| error.to_string())?;
     let storage_root = active_storage_root(app)?;
     let notes_dir = notes_dir_for_storage_root(&storage_root);
+    let deleted_stack = read_deleted_stack(&storage_root)?;
 
-    let (stripped_root, legacy_note_bundles) = split_app_state(&root_value);
+    let (stripped_root, legacy_note_bundles, legacy_deleted_stack) = split_app_state(&root_value);
+    let effective_deleted_stack = if deleted_stack.is_empty() {
+        legacy_deleted_stack.clone()
+    } else {
+        deleted_stack.clone()
+    };
+
     if stripped_root != root_value {
         write_json_file(state_path, &stripped_root)?;
         if !legacy_note_bundles.is_empty() {
           write_note_bundles(&storage_root, &legacy_note_bundles)?;
           write_search_index(&storage_root, &legacy_note_bundles)?;
         }
+        if !legacy_deleted_stack.is_empty() {
+          write_deleted_stack(&storage_root, &legacy_deleted_stack)?;
+        }
     }
 
     let note_bundles = read_note_bundles(&notes_dir)?;
 
-    if note_bundles.is_empty() {
-      return Ok(root_content);
+    if note_bundles.is_empty() && effective_deleted_stack.is_empty() {
+      return serde_json::to_string(&stripped_root).map_err(|error| error.to_string());
     }
 
-    let merged = merge_root_state_with_notes(root_value, note_bundles);
+    let merged = merge_root_state_with_notes(root_value, note_bundles, effective_deleted_stack);
     serde_json::to_string(&merged).map_err(|error| error.to_string())
 }
 
@@ -656,26 +724,26 @@ fn read_note_bundles(notes_dir: &Path) -> Result<Vec<NoteBundle>, String> {
     Ok(bundles)
 }
 
-fn split_app_state(value: &Value) -> (Value, Vec<NoteBundle>) {
+fn split_app_state(value: &Value) -> (Value, Vec<NoteBundle>, Vec<DeletedSnapshot>) {
     let Some(map) = value.as_object() else {
-        return (value.clone(), Vec::new());
+        return (value.clone(), Vec::new(), Vec::new());
     };
 
     let Some(state_value) = map.get("state") else {
         return split_inner_state(value.clone());
     };
 
-    let (next_state, note_bundles) = split_inner_state(state_value.clone());
+    let (next_state, note_bundles, deleted_stack) = split_inner_state(state_value.clone());
 
     let mut root_map = map.clone();
     root_map.insert("state".to_string(), next_state);
 
-    (Value::Object(root_map), note_bundles)
+    (Value::Object(root_map), note_bundles, deleted_stack)
 }
 
-fn split_inner_state(value: Value) -> (Value, Vec<NoteBundle>) {
+fn split_inner_state(value: Value) -> (Value, Vec<NoteBundle>, Vec<DeletedSnapshot>) {
     let Some(map) = value.as_object() else {
-        return (value, Vec::new());
+        return (value, Vec::new(), Vec::new());
     };
 
     let notes = map
@@ -693,6 +761,14 @@ fn split_inner_state(value: Value) -> (Value, Vec<NoteBundle>) {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let deleted_stack = map
+        .get("deletedStack")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| serde_json::from_value::<DeletedSnapshot>(value).ok())
+        .collect::<Vec<_>>();
 
     let mut entries_by_note: HashMap<String, Vec<Value>> = HashMap::new();
     for entry in entries {
@@ -726,25 +802,35 @@ fn split_inner_state(value: Value) -> (Value, Vec<NoteBundle>) {
     root_map.remove("notes");
     root_map.remove("entries");
     root_map.remove("todos");
+    root_map.remove("deletedStack");
+    root_map.remove("activities");
 
-    (Value::Object(root_map), note_bundles)
+    (Value::Object(root_map), note_bundles, deleted_stack)
 }
 
-fn merge_root_state_with_notes(mut root_state: Value, note_bundles: Vec<NoteBundle>) -> Value {
+fn merge_root_state_with_notes(
+    mut root_state: Value,
+    note_bundles: Vec<NoteBundle>,
+    deleted_stack: Vec<DeletedSnapshot>,
+) -> Value {
     let Some(root_map) = root_state.as_object_mut() else {
         return root_state;
     };
 
     let Some(state_value) = root_map.get_mut("state") else {
-        return merge_inner_state(root_state, note_bundles);
+        return merge_inner_state(root_state, note_bundles, deleted_stack);
     };
 
-    let next_state = merge_inner_state(state_value.clone(), note_bundles);
+    let next_state = merge_inner_state(state_value.clone(), note_bundles, deleted_stack);
     root_map.insert("state".to_string(), next_state);
     root_state
 }
 
-fn merge_inner_state(mut inner_state: Value, note_bundles: Vec<NoteBundle>) -> Value {
+fn merge_inner_state(
+    mut inner_state: Value,
+    note_bundles: Vec<NoteBundle>,
+    deleted_stack: Vec<DeletedSnapshot>,
+) -> Value {
     let Some(root_map) = inner_state.as_object_mut() else {
         return inner_state;
     };
@@ -766,6 +852,9 @@ fn merge_inner_state(mut inner_state: Value, note_bundles: Vec<NoteBundle>) -> V
     root_map.insert("notes".to_string(), Value::Array(notes));
     root_map.insert("entries".to_string(), Value::Array(entries));
     root_map.insert("todos".to_string(), Value::Array(todos));
+    let deleted_stack_value = serde_json::to_value(deleted_stack).unwrap_or(Value::Array(Vec::new()));
+    root_map.insert("deletedStack".to_string(), deleted_stack_value);
+    root_map.remove("activities");
     inner_state
 }
 

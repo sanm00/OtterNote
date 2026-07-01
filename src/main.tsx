@@ -146,11 +146,21 @@ function Sidebar() {
   const selectedNoteId = useAppStore((state) => state.selectedNoteId);
   const selectNote = useAppStore((state) => state.selectNote);
 
-  const recentNotes = recentNoteIds
-    .map((id) => notes.find((note) => note.id === id))
-    .filter((note): note is NonNullable<typeof note> => Boolean(note))
-    .slice(0, 5);
-  const sortedNotes = [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const recentNotes = React.useMemo(() => {
+    const recent = recentNoteIds
+      .map((id) => notes.find((note) => note.id === id))
+      .filter((note): note is NonNullable<typeof note> => Boolean(note));
+    if (recent.length >= 10) {
+      return recent.slice(0, 10);
+    }
+
+    const recentIds = new Set(recent.map((note) => note.id));
+    const fallback = [...notes]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .filter((note) => !recentIds.has(note.id));
+
+    return [...recent, ...fallback].slice(0, 10);
+  }, [notes, recentNoteIds]);
 
   return (
     <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r border-blue-100 bg-blue-50/80">
@@ -192,23 +202,23 @@ function Sidebar() {
       </div>
 
       <section className="min-h-0 flex-1 overflow-y-auto px-3">
-        <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recent opened</div>
+        <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recent opened</div>
         {recentNotes.length === 0 ? (
           <p className="rounded-md border border-dashed border-blue-200 bg-white/60 p-3 text-sm text-slate-500">
             No recently opened notes.
           </p>
         ) : (
-          <div className="mb-4 space-y-1">
+          <div className="mb-2.5 space-y-0">
             {recentNotes.map((note) => (
               <button
                 key={note.id}
-                className={`sidebar-item w-full rounded-md px-3 py-2 text-left text-sm ${
+                className={`sidebar-item w-full rounded-md px-3 py-0.5 text-left text-[13px] leading-5 ${
                   selectedNoteId === note.id ? 'sidebar-selected shadow-sm' : 'text-slate-700 hover:bg-white'
                 }`}
                 onClick={() => selectNote(note.id)}
               >
                 <div className="truncate font-medium">{displayTitle(note.title)}</div>
-                <div className={`truncate text-xs ${selectedNoteId === note.id ? 'sidebar-selected-meta' : 'text-slate-500'}`}>
+                <div className={`truncate text-[9px] leading-4 ${selectedNoteId === note.id ? 'sidebar-selected-meta' : 'text-slate-500'}`}>
                   {formatDate(note.updatedAt)}
                 </div>
               </button>
@@ -216,40 +226,20 @@ function Sidebar() {
           </div>
         )}
 
-        <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Notes</div>
-        {sortedNotes.length === 0 ? (
-          <p className="rounded-md border border-dashed border-blue-200 bg-white/60 p-3 text-sm text-slate-500">
-            No notes yet.
-          </p>
-        ) : (
-          <div className="space-y-1">
-            {sortedNotes.map((note) => (
-              <button
-                key={note.id}
-                className={`sidebar-item w-full rounded-md px-3 py-2 text-left text-sm ${
-                  selectedNoteId === note.id ? 'sidebar-selected shadow-sm' : 'text-slate-700 hover:bg-white'
-                }`}
-                onClick={() => selectNote(note.id)}
-              >
-                <div className="truncate font-medium">{displayTitle(note.title)}</div>
-              </button>
-            ))}
-          </div>
-        )}
       </section>
 
       <nav className="border-t border-blue-100 p-3">
-        <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+        <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
           Navigation
         </div>
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeSection === item.id;
             return (
               <button
                 key={item.id}
-                className={`sidebar-item flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${
+                className={`sidebar-item flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-[13px] font-medium leading-5 ${
                   active ? 'sidebar-selected' : 'text-slate-700 hover:bg-white'
                 }`}
                 onClick={() => {
@@ -2222,7 +2212,6 @@ function normalizeImportedSnapshot(value: Partial<AppStateSnapshot>): AppStateSn
     notes: Array.isArray(value.notes) ? value.notes : [],
     entries: Array.isArray(value.entries) ? value.entries : [],
     todos: Array.isArray(value.todos) ? value.todos : [],
-    activities: Array.isArray(value.activities) ? value.activities : [],
     recentNoteIds: Array.isArray(value.recentNoteIds) ? value.recentNoteIds : [],
     shortcuts: {
       ...defaultShortcuts,
