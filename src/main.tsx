@@ -143,6 +143,7 @@ function Sidebar() {
   const setQuery = useAppStore((state) => state.setQuery);
   const notes = useAppStore((state) => state.notes);
   const recentNoteIds = useAppStore((state) => state.recentNoteIds);
+  const selectedNoteId = useAppStore((state) => state.selectedNoteId);
   const selectNote = useAppStore((state) => state.selectNote);
 
   const recentNotes = recentNoteIds
@@ -154,17 +155,17 @@ function Sidebar() {
   return (
     <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r border-blue-100 bg-blue-50/80">
       <div className="px-3 pt-3">
-        <div className="px-1 py-2">
+        <div className="px-1 py-1.5">
           <div className="flex items-center gap-3">
             <img
               src="/app-logo.png"
               alt=""
               aria-hidden="true"
-              className="h-12 w-12 rounded-xl object-cover"
+              className="h-10 w-10 rounded-xl object-cover"
             />
             <div className="min-w-0">
-              <div className="truncate text-xl font-semibold text-blue-950">OtterNote</div>
-              <div className="truncate text-xs text-slate-500">Notes, todo, timeline</div>
+              <div className="truncate text-lg font-semibold text-blue-950">OtterNote</div>
+              <div className="truncate text-[11px] text-slate-500">Notes, todo, timeline</div>
             </div>
           </div>
         </div>
@@ -183,7 +184,7 @@ function Sidebar() {
         </label>
       </div>
 
-      <div className="px-3 py-3">
+      <div className="px-3 py-2.5">
         <button className="primary-button h-10 w-full" onClick={() => setActiveSection('new')}>
           <Plus className="h-4 w-4" />
           New
@@ -191,7 +192,7 @@ function Sidebar() {
       </div>
 
       <section className="min-h-0 flex-1 overflow-y-auto px-3">
-        <div className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Recent Opened</div>
+        <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recent opened</div>
         {recentNotes.length === 0 ? (
           <p className="rounded-md border border-dashed border-blue-200 bg-white/60 p-3 text-sm text-slate-500">
             No recently opened notes.
@@ -201,17 +202,21 @@ function Sidebar() {
             {recentNotes.map((note) => (
               <button
                 key={note.id}
-                className="sidebar-item w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-white"
+                className={`sidebar-item w-full rounded-md px-3 py-2 text-left text-sm ${
+                  selectedNoteId === note.id ? 'sidebar-selected shadow-sm' : 'text-slate-700 hover:bg-white'
+                }`}
                 onClick={() => selectNote(note.id)}
               >
                 <div className="truncate font-medium">{displayTitle(note.title)}</div>
-                <div className="truncate text-xs text-slate-500">{formatDate(note.updatedAt)}</div>
+                <div className={`truncate text-xs ${selectedNoteId === note.id ? 'sidebar-selected-meta' : 'text-slate-500'}`}>
+                  {formatDate(note.updatedAt)}
+                </div>
               </button>
             ))}
           </div>
         )}
 
-        <div className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</div>
+        <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Notes</div>
         {sortedNotes.length === 0 ? (
           <p className="rounded-md border border-dashed border-blue-200 bg-white/60 p-3 text-sm text-slate-500">
             No notes yet.
@@ -221,7 +226,9 @@ function Sidebar() {
             {sortedNotes.map((note) => (
               <button
                 key={note.id}
-                className="sidebar-item w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-white"
+                className={`sidebar-item w-full rounded-md px-3 py-2 text-left text-sm ${
+                  selectedNoteId === note.id ? 'sidebar-selected shadow-sm' : 'text-slate-700 hover:bg-white'
+                }`}
                 onClick={() => selectNote(note.id)}
               >
                 <div className="truncate font-medium">{displayTitle(note.title)}</div>
@@ -232,7 +239,7 @@ function Sidebar() {
       </section>
 
       <nav className="border-t border-blue-100 p-3">
-        <div className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
           Navigation
         </div>
         <div className="space-y-1">
@@ -243,7 +250,7 @@ function Sidebar() {
               <button
                 key={item.id}
                 className={`sidebar-item flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${
-                  active ? 'bg-blue-700 text-white' : 'text-slate-700 hover:bg-white'
+                  active ? 'sidebar-selected' : 'text-slate-700 hover:bg-white'
                 }`}
                 onClick={() => {
                   setActiveSection(item.id);
@@ -339,9 +346,9 @@ function NewEntryPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-white">
-      <header className="border-b border-slate-200 px-8 py-5">
-        <h1 className="text-xl font-semibold">New</h1>
-        <p className="mt-1 text-sm text-slate-500">Write a work note. Use - [ ] to capture ToDo items.</p>
+      <header className="border-b border-slate-200 px-6 py-4">
+        <h1 className="text-lg font-semibold">New</h1>
+        <p className="mt-1 text-sm text-slate-500">Write a note and capture ToDo items inline.</p>
       </header>
       <WorkspaceToolbar
         mode={isPreviewing ? 'preview' : 'edit'}
@@ -360,7 +367,7 @@ function NewEntryPage() {
         saveLabel="Save"
         cancelLabel="Cancel"
       />
-      <div className="min-h-0 flex-1 overflow-y-auto p-8">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
         {isPreviewing ? (
           <div className="mx-auto w-full max-w-3xl">
             <div className="rounded-lg bg-white p-4">
@@ -394,18 +401,18 @@ function Timeline() {
 
   return (
     <Page title="Timeline" subtitle="Notes grouped by time">
-      <div className="mx-auto w-full max-w-3xl space-y-3">
+      <div className="mx-auto w-full max-w-3xl space-y-2.5">
         {groups.length === 0 ? (
           <EmptyMessage title="No notes yet" message="Create notes to populate the timeline." />
         ) : (
           groups.map((group) => (
             <section key={group.label}>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{group.label}</div>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{group.label}</div>
               <div className="space-y-2">
                 {group.notes.map((note) => (
                   <button
                     key={note.id}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-4 text-left hover:bg-slate-50"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:bg-slate-50"
                     onClick={() => selectNote(note.id)}
                   >
                     <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
@@ -435,14 +442,14 @@ function NotesListPage() {
 
   return (
     <Page title="Notes" subtitle="All notes">
-      <div className="mx-auto w-full max-w-3xl space-y-3">
+      <div className="mx-auto w-full max-w-3xl space-y-2.5">
         {sortedNotes.length === 0 ? (
           <EmptyMessage title="No notes yet" message="Create a note to start writing." />
         ) : (
           sortedNotes.map((note) => (
             <button
               key={note.id}
-              className="w-full rounded-lg border border-slate-200 bg-white p-4 text-left hover:bg-slate-50"
+              className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:bg-slate-50"
               onClick={() => selectNote(note.id)}
             >
               <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
@@ -589,13 +596,13 @@ function NoteDetail({ noteId }: { noteId: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-white">
-      <header className="border-b border-slate-200 px-8 py-5">
+      <header className="border-b border-slate-200 px-6 py-4">
         <div className="flex items-center gap-3">
           <input
             value={note.title}
             onChange={(event) => updateNoteTitle(note.id, event.target.value)}
             placeholder="Untitled Note"
-            className="min-w-0 flex-1 bg-transparent text-xl font-semibold outline-none"
+            className="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none"
           />
         </div>
         <p className="mt-1 text-sm text-slate-500">Updated {formatDate(note.updatedAt)}</p>
@@ -620,8 +627,8 @@ function NoteDetail({ noteId }: { noteId: string }) {
         saveLabel="Save"
         cancelLabel="Cancel"
       />
-      <div className="min-h-0 flex-1 overflow-y-auto p-8">
-        <div className="mx-auto w-full max-w-3xl space-y-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="mx-auto w-full max-w-3xl space-y-3.5">
           {isEditing ? (
             <div className="editor-shell">
               <CodeMirror
@@ -684,8 +691,8 @@ function WorkspaceToolbar({
   cancelLabel: string;
 }) {
   return (
-    <div className="border-b border-slate-200 px-8 py-3">
-      <div className="flex justify-end gap-2">
+    <div className="border-b border-slate-200 px-6 py-3">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         {onExport ? (
           <button className="secondary-button" onClick={onExport}>
             <Download className="h-4 w-4" />
@@ -700,7 +707,7 @@ function WorkspaceToolbar({
         ) : null}
         {showPreviewButton ? (
           <button
-            className={`secondary-button ${mode === 'preview' ? 'bg-blue-50 text-blue-800' : ''}`}
+            className={`secondary-button ${mode === 'preview' ? 'bg-slate-100 text-slate-800' : ''}`}
             onClick={onTogglePreview}
             aria-pressed={mode === 'preview'}
           >
@@ -1449,7 +1456,7 @@ function SettingsPage() {
   const setTheme = useAppStore((state) => state.setTheme);
 
   return (
-    <Page title="Settings" subtitle="MVP settings">
+    <Page title="Settings" subtitle="Application settings">
       <div className="mx-auto w-full max-w-2xl space-y-4">
         <StorageSettings />
         <BackupSettings />
@@ -1817,11 +1824,11 @@ function ShortcutInput({
 function Page({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="border-b border-slate-200 bg-white px-6 py-4">
-        <h1 className="text-xl font-semibold">{title}</h1>
+      <header className="border-b border-slate-200 bg-white px-6 py-3.5">
+        <h1 className="text-lg font-semibold">{title}</h1>
         {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto p-6">{children}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
     </div>
   );
 }

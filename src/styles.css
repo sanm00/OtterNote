@@ -87,6 +87,15 @@ button:disabled {
   @apply min-h-[28rem] rounded-lg bg-white p-3;
 }
 
+[data-theme='light'] .sidebar-panel .sidebar-selected {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
+[data-theme='light'] .sidebar-panel .sidebar-selected-meta {
+  color: #1d4ed8;
+}
+
 [data-theme='dark'] .editor-shell {
   @apply bg-slate-900;
 }
@@ -108,6 +117,20 @@ button:disabled {
 
 [data-theme='dark'] .sidebar-panel .text-slate-500 {
   color: #94a3b8;
+}
+
+[data-theme='dark'] .sidebar-panel .sidebar-selected {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+[data-theme='dark'] .sidebar-panel .sidebar-selected-meta {
+  color: #94a3b8;
+}
+
+[data-theme='dark'] .secondary-button.bg-slate-100.text-slate-800 {
+  background: #1e293b;
+  color: #e2e8f0;
 }
 
 [data-theme='dark'] .bg-blue-50\/80 {
