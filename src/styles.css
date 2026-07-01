@@ -1,0 +1,411 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 1024px;
+  min-height: 100vh;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+[data-theme='dark'] body {
+  background: #020617;
+  color: #e2e8f0;
+  color-scheme: dark;
+}
+
+[data-theme='dark'] .app-shell {
+  background: #020617;
+  color: #e2e8f0;
+}
+
+[data-theme='dark'] .sidebar-panel {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+[data-theme='dark'] aside {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+[data-theme='dark'] main {
+  background: #020617;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.primary-button {
+  @apply inline-flex items-center justify-center gap-2 rounded-md bg-blue-700 px-3 py-2 text-sm font-medium text-white hover:bg-blue-800;
+}
+
+.secondary-button {
+  @apply inline-flex items-center justify-center gap-2 rounded-md border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-800 hover:bg-blue-50;
+}
+
+[data-theme='dark'] .primary-button {
+  @apply bg-sky-500 text-slate-950 hover:bg-sky-400;
+}
+
+[data-theme='dark'] .secondary-button {
+  @apply border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800;
+}
+
+[data-theme='dark'] .border-dashed {
+  border-color: #334155;
+}
+
+[data-theme='dark'] input,
+[data-theme='dark'] textarea {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-color: #334155;
+}
+
+[data-theme='dark'] input::placeholder,
+[data-theme='dark'] textarea::placeholder {
+  color: #64748b;
+}
+
+.editor-shell {
+  @apply min-h-[28rem] rounded-lg bg-white p-3;
+}
+
+[data-theme='dark'] .editor-shell {
+  @apply bg-slate-900;
+}
+
+[data-theme='dark'] .rounded-lg.border.border-slate-200.bg-white,
+[data-theme='dark'] .rounded-md.border.border-slate-200.bg-white,
+[data-theme='dark'] .rounded-2xl.border.border-blue-100.bg-white\/80,
+[data-theme='dark'] .rounded-md.border.border-blue-100.bg-white,
+[data-theme='dark'] .rounded-md.border.border-blue-200.bg-white,
+[data-theme='dark'] .rounded-lg.border.border-blue-200.bg-white,
+[data-theme='dark'] .rounded-lg.border.border-blue-200.bg-white\/60 {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+[data-theme='dark'] .sidebar-panel .text-blue-950 {
+  color: #f8fafc;
+}
+
+[data-theme='dark'] .sidebar-panel .text-slate-500 {
+  color: #94a3b8;
+}
+
+[data-theme='dark'] .bg-blue-50\/80 {
+  background: #0f172a;
+}
+
+[data-theme='dark'] .bg-white\/60 {
+  background: #111827;
+}
+
+[data-theme='dark'] .bg-slate-50.p-3,
+[data-theme='dark'] .rounded-md.bg-slate-50.p-3 {
+  background: #111827;
+}
+
+[data-theme='dark'] .border-t.border-slate-200,
+[data-theme='dark'] .border-b.border-slate-200,
+[data-theme='dark'] .border-t.border-blue-100,
+[data-theme='dark'] .border-b.border-blue-100 {
+  border-color: #334155;
+}
+
+[data-theme='dark'] .ring-blue-200:focus,
+[data-theme='dark'] .focus\:ring-2:focus {
+  --tw-ring-color: #38bdf8;
+}
+
+.markdown-content {
+  @apply text-sm leading-6 text-slate-800;
+}
+
+[data-theme='dark'] .markdown-content {
+  color: #cbd5e1;
+}
+
+.markdown-content h1 {
+  @apply mb-3 mt-4 text-2xl font-semibold text-slate-950;
+}
+
+[data-theme='dark'] .markdown-content h1,
+[data-theme='dark'] .markdown-content h2,
+[data-theme='dark'] .markdown-content h3 {
+  color: #f8fafc;
+}
+
+.markdown-content h2 {
+  @apply mb-2 mt-4 text-xl font-semibold text-slate-950;
+}
+
+.markdown-content h3 {
+  @apply mb-2 mt-3 text-lg font-semibold text-slate-950;
+}
+
+.markdown-content p {
+  @apply my-2;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  @apply my-2 pl-5;
+}
+
+.markdown-content ul {
+  @apply list-disc;
+}
+
+.markdown-content ol {
+  @apply list-decimal;
+}
+
+.markdown-content li {
+  @apply my-1;
+}
+
+.markdown-content code {
+  @apply rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.85em] text-slate-900;
+}
+
+[data-theme='dark'] .markdown-content code {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+.markdown-content pre {
+  @apply my-3 overflow-x-auto rounded-lg bg-slate-950 p-4 text-slate-50;
+}
+
+[data-theme='dark'] .markdown-content pre {
+  background: #020617;
+  color: #e2e8f0;
+}
+
+.markdown-content pre code {
+  @apply bg-transparent p-0 text-slate-50;
+}
+
+.markdown-content blockquote {
+  @apply my-3 border-l-4 border-slate-200 pl-4 text-slate-600;
+}
+
+[data-theme='dark'] .markdown-content blockquote {
+  border-left-color: #475569;
+  color: #94a3b8;
+}
+
+.markdown-content a {
+  @apply text-blue-700 underline underline-offset-2;
+}
+
+[data-theme='dark'] .markdown-content a {
+  color: #7dd3fc;
+}
+
+.markdown-content img {
+  @apply my-3 block max-w-full rounded-lg;
+}
+
+[data-theme='dark'] .markdown-content img {
+  @apply border border-slate-700;
+}
+
+.markdown-content table {
+  @apply my-3 w-full border-collapse text-left;
+}
+
+.markdown-content th,
+.markdown-content td {
+  @apply border border-slate-200 px-2 py-1;
+}
+
+.markdown-content th {
+  @apply bg-slate-50 font-semibold;
+}
+
+[data-theme='dark'] .markdown-content th {
+  background: #1e293b;
+}
+
+[data-theme='dark'] .markdown-content td,
+[data-theme='dark'] .markdown-content th {
+  border-color: #334155;
+}
+
+[data-theme='dark'] .bg-white {
+  background-color: #0f172a;
+}
+
+[data-theme='dark'] .bg-slate-50 {
+  background-color: #020617;
+}
+
+[data-theme='dark'] .bg-slate-100 {
+  background-color: #1e293b;
+}
+
+[data-theme='dark'] .bg-slate-950 {
+  background-color: #020617;
+}
+
+[data-theme='dark'] .bg-blue-50 {
+  background-color: #0f172a;
+}
+
+[data-theme='dark'] .bg-blue-700 {
+  background-color: #0284c7;
+}
+
+[data-theme='dark'] .text-blue-900 {
+  color: #bae6fd;
+}
+
+[data-theme='dark'] .text-white {
+  color: #f8fafc;
+}
+
+[data-theme='dark'] .border-slate-100,
+[data-theme='dark'] .border-slate-200,
+[data-theme='dark'] .border-blue-100,
+[data-theme='dark'] .border-blue-200 {
+  border-color: #334155;
+}
+
+[data-theme='dark'] .text-slate-950,
+[data-theme='dark'] .text-slate-900,
+[data-theme='dark'] .text-slate-800 {
+  color: #f8fafc;
+}
+
+[data-theme='dark'] .text-slate-700 {
+  color: #e2e8f0;
+}
+
+[data-theme='dark'] .text-slate-600 {
+  color: #cbd5e1;
+}
+
+[data-theme='dark'] .text-slate-500 {
+  color: #94a3b8;
+}
+
+[data-theme='dark'] .text-slate-400 {
+  color: #64748b;
+}
+
+[data-theme='dark'] .text-blue-700,
+[data-theme='dark'] .text-blue-800,
+[data-theme='dark'] .text-blue-900 {
+  color: #7dd3fc;
+}
+
+[data-theme='dark'] .hover\\:bg-slate-50:hover {
+  background-color: #111827;
+}
+
+[data-theme='dark'] .hover\\:bg-white:hover {
+  background-color: #1e293b;
+}
+
+[data-theme='dark'] .hover\\:bg-blue-50:hover {
+  background-color: #111827;
+}
+
+[data-theme='dark'] .hover\\:bg-blue-800:hover {
+  background-color: #0369a1;
+}
+
+[data-theme='dark'] .hover\\:bg-red-50:hover {
+  background-color: #3f1d1d;
+}
+
+[data-theme='dark'] .hover\\:bg-slate-100:hover {
+  background-color: #1e293b;
+}
+
+[data-theme='dark'] .sidebar-item:hover {
+  background-color: #1e293b;
+}
+
+.cm-editor {
+  outline: none !important;
+}
+
+.cm-focused {
+  outline: none !important;
+}
+
+.cm-editor .cm-content {
+  caret-color: #0f172a;
+}
+
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left-color: #0f172a;
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor ::selection {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+[data-theme='dark'] .cm-editor {
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+[data-theme='dark'] .cm-gutters {
+  background: #0f172a;
+  color: #64748b;
+  border-right-color: #334155;
+}
+
+[data-theme='dark'] .cm-content {
+  caret-color: #e2e8f0;
+}
+
+[data-theme='dark'] .cm-editor .cm-cursor,
+[data-theme='dark'] .cm-editor .cm-dropCursor {
+  border-left-color: #f8fafc;
+}
+
+[data-theme='dark'] .cm-editor .cm-url,
+[data-theme='dark'] .cm-editor .cm-link,
+[data-theme='dark'] .cm-editor .cm-string {
+  color: #7dd3fc;
+}
+
+[data-theme='dark'] .cm-editor .cm-formatting,
+[data-theme='dark'] .cm-editor .cm-monospace,
+[data-theme='dark'] .cm-editor .cm-quote {
+  color: #94a3b8;
+}
+
+[data-theme='dark'] .cm-editor .cm-selectionBackground,
+[data-theme='dark'] .cm-editor ::selection {
+  background: rgba(56, 189, 248, 0.28);
+}
+
+[data-theme='dark'] .cm-activeLine,
+[data-theme='dark'] .cm-activeLineGutter {
+  background: #1e293b;
+}
