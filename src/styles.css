@@ -15,10 +15,34 @@ body {
     sans-serif;
 }
 
+:root {
+  --app-hover-surface: #f8fafc;
+  --app-selected-surface: #e0f2fe;
+  --app-selected-surface-strong: #bae6fd;
+  --app-selected-border: #7dd3fc;
+  --app-selected-foreground: #075985;
+  --app-selected-meta: #0284c7;
+  --app-focus-ring: rgba(14, 165, 233, 0.28);
+  --app-toggle-surface: #f8fafc;
+  --app-toggle-border: #dbeafe;
+}
+
 [data-theme='dark'] body {
   background: #020617;
   color: #e2e8f0;
   color-scheme: dark;
+}
+
+[data-theme='dark'] {
+  --app-hover-surface: #111827;
+  --app-selected-surface: rgba(14, 165, 233, 0.14);
+  --app-selected-surface-strong: rgba(56, 189, 248, 0.22);
+  --app-selected-border: rgba(56, 189, 248, 0.28);
+  --app-selected-foreground: #e0f2fe;
+  --app-selected-meta: #7dd3fc;
+  --app-focus-ring: rgba(56, 189, 248, 0.3);
+  --app-toggle-surface: #0f172a;
+  --app-toggle-border: #334155;
 }
 
 [data-theme='dark'] .app-shell {
@@ -87,13 +111,56 @@ button:disabled {
   @apply min-h-[28rem] rounded-lg bg-white p-3;
 }
 
+.theme-toggle {
+  @apply inline-flex rounded-lg border p-1;
+  background: var(--app-toggle-surface);
+  border-color: var(--app-toggle-border);
+}
+
+.theme-toggle-option {
+  @apply inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition;
+  color: #475569;
+}
+
+.theme-toggle-option-inactive {
+  color: #64748b;
+}
+
+.theme-toggle-option:hover {
+  background: var(--app-hover-surface);
+  color: #0f172a;
+}
+
+.surface-card {
+  background: #ffffff;
+  border-color: #dbeafe;
+}
+
+.surface-card-hover:hover {
+  background: var(--app-hover-surface);
+}
+
+[data-theme='dark'] .surface-card {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+.theme-toggle-option-active {
+  background: var(--app-selected-surface);
+  color: var(--app-selected-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selected-border);
+}
+
 [data-theme='light'] .sidebar-panel .sidebar-selected {
-  background: #dbeafe;
-  color: #1e3a8a;
+  background: var(--app-selected-surface);
+  color: var(--app-selected-foreground);
+  box-shadow:
+    inset 0 0 0 1px var(--app-selected-border),
+    0 1px 2px rgba(15, 23, 42, 0.06);
 }
 
 [data-theme='light'] .sidebar-panel .sidebar-selected-meta {
-  color: #1d4ed8;
+  color: var(--app-selected-meta);
 }
 
 [data-theme='dark'] .editor-shell {
@@ -120,12 +187,15 @@ button:disabled {
 }
 
 [data-theme='dark'] .sidebar-panel .sidebar-selected {
-  background: #1e293b;
-  color: #e2e8f0;
+  background: var(--app-selected-surface);
+  color: var(--app-selected-foreground);
+  box-shadow:
+    inset 0 0 0 1px var(--app-selected-border),
+    0 1px 2px rgba(15, 23, 42, 0.24);
 }
 
 [data-theme='dark'] .sidebar-panel .sidebar-selected-meta {
-  color: #94a3b8;
+  color: var(--app-selected-meta);
 }
 
 [data-theme='dark'] .secondary-button.bg-slate-100.text-slate-800 {
@@ -197,12 +267,31 @@ button:disabled {
   @apply list-disc;
 }
 
+.markdown-content ul.contains-task-list {
+  @apply list-none pl-0;
+}
+
 .markdown-content ol {
   @apply list-decimal;
 }
 
 .markdown-content li {
   @apply my-1;
+}
+
+.markdown-content li.task-list-item {
+  @apply grid list-none gap-2;
+  grid-template-columns: 1.1rem 1fr;
+  align-items: center;
+}
+
+.markdown-content li.task-list-item > input[type='checkbox'] {
+  @apply m-0 shrink-0;
+  accent-color: #2563eb;
+}
+
+[data-theme='dark'] .markdown-content li.task-list-item > input[type='checkbox'] {
+  accent-color: #38bdf8;
 }
 
 .markdown-content code {
@@ -342,15 +431,15 @@ button:disabled {
 }
 
 [data-theme='dark'] .hover\\:bg-slate-50:hover {
-  background-color: #111827;
+  background-color: var(--app-hover-surface);
 }
 
 [data-theme='dark'] .hover\\:bg-white:hover {
-  background-color: #1e293b;
+  background-color: var(--app-hover-surface);
 }
 
 [data-theme='dark'] .hover\\:bg-blue-50:hover {
-  background-color: #111827;
+  background-color: var(--app-hover-surface);
 }
 
 [data-theme='dark'] .hover\\:bg-blue-800:hover {
@@ -362,11 +451,11 @@ button:disabled {
 }
 
 [data-theme='dark'] .hover\\:bg-slate-100:hover {
-  background-color: #1e293b;
+  background-color: var(--app-hover-surface);
 }
 
 [data-theme='dark'] .sidebar-item:hover {
-  background-color: #1e293b;
+  background-color: var(--app-hover-surface);
 }
 
 .cm-editor {

@@ -34,7 +34,7 @@ export type Todo = {
   completedAt?: string;
 };
 
-export type ShortcutAction = 'save' | 'edit' | 'delete' | 'undo';
+export type ShortcutAction = 'save' | 'edit' | 'delete' | 'cancel' | 'new';
 export type ShortcutConfig = Record<ShortcutAction, string>;
 export type ThemeMode = 'light' | 'dark';
 
@@ -60,6 +60,7 @@ type AppState = {
   activeSection: NavSection;
   selectedNoteId?: string;
   query: string;
+  searchFocused: boolean;
   notes: Note[];
   entries: NoteEntry[];
   todos: Todo[];
@@ -70,6 +71,7 @@ type AppState = {
   setActiveSection: (section: NavSection) => void;
   clearSelectedNote: () => void;
   setQuery: (query: string) => void;
+  setSearchFocused: (focused: boolean) => void;
   updateShortcut: (action: ShortcutAction, shortcut: string) => void;
   setTheme: (theme: ThemeMode) => void;
   replaceAppState: (state: AppStateSnapshot) => void;
@@ -92,6 +94,7 @@ export type AppStateSnapshot = Pick<
   | 'activeSection'
   | 'selectedNoteId'
   | 'query'
+  | 'searchFocused'
   | 'notes'
   | 'entries'
   | 'todos'
@@ -102,19 +105,47 @@ export type AppStateSnapshot = Pick<
 >;
 
 export const defaultShortcuts: ShortcutConfig = {
-  save: 'Mod+S',
-  edit: 'Mod+E',
-  delete: 'Mod+Backspace',
-  undo: 'Mod+Shift+Z',
+  save: 'Cmd+S',
+  edit: 'Cmd+E',
+  delete: 'Cmd+Backspace',
+  cancel: 'Esc',
+  new: 'Cmd+N',
 };
 
 export const defaultTheme: ThemeMode = 'light';
 
+function normalizeShortcut(shortcut: string) {
+  return shortcut
+    .split('+')
+    .map((part) => {
+      const trimmed = part.trim();
+      const lower = trimmed.toLowerCase();
+      if (['mod', 'cmd', 'command', 'meta', 'ctrl', 'control'].includes(lower)) {
+        return 'Cmd';
+      }
+      return trimmed;
+    })
+    .filter(Boolean)
+    .join('+');
+}
+
+function normalizeShortcuts(shortcuts?: Partial<ShortcutConfig>) {
+  if (!shortcuts) {
+    return {};
+  }
+
+  const { undo: _undo, ...rest } = shortcuts as Partial<ShortcutConfig> & { undo?: string };
+  return Object.fromEntries(
+    Object.entries(rest).map(([action, shortcut]) => [action, normalizeShortcut(shortcut)]),
+  ) as Partial<ShortcutConfig>;
+}
+
 export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
-      activeSection: 'timeline',
+      activeSection: 'notes',
       query: '',
+      searchFocused: false,
       notes: [],
       entries: [],
       todos: [],
@@ -125,11 +156,12 @@ export const useAppStore = create<AppState>()(
       setActiveSection: (section) => set({ activeSection: section }),
       clearSelectedNote: () => set({ selectedNoteId: undefined }),
       setQuery: (query) => set({ query }),
+      setSearchFocused: (searchFocused) => set({ searchFocused }),
       updateShortcut: (action, shortcut) =>
         set((state) => ({
           shortcuts: {
             ...state.shortcuts,
-            [action]: shortcut,
+            [action]: normalizeShortcut(shortcut),
           },
         })),
       setTheme: (theme) => set({ theme }),
@@ -138,13 +170,14 @@ export const useAppStore = create<AppState>()(
           activeSection: snapshot.activeSection,
           selectedNoteId: snapshot.selectedNoteId,
           query: snapshot.query,
+          searchFocused: snapshot.searchFocused ?? false,
           notes: snapshot.notes,
           entries: snapshot.entries,
           todos: snapshot.todos,
           recentNoteIds: snapshot.recentNoteIds,
           shortcuts: {
             ...defaultShortcuts,
-            ...snapshot.shortcuts,
+            ...normalizeShortcuts(snapshot.shortcuts),
           },
           theme: snapshot.theme ?? defaultTheme,
           deletedStack: snapshot.deletedStack,
@@ -167,39 +200,14 @@ export const useAppStore = create<AppState>()(
         }),
       createNoteWithEntry: (content) =>
         set((state) => {
-          const now = new Date().toISOString();
-          const title = firstTitleFromContent(content);
-          const note: Note = {
-            id: createId('note'),
-            title,
-            createdAt: now,
-            updatedAt: now,
-          };
-          const entry: NoteEntry = {
-            id: createId('entry'),
-            noteId: note.id,
-            content,
-            createdAt: now,
-            updatedAt: now,
-          };
-          const todos: Todo[] = parseTodosFromEntry(content).map((todo) => ({
-            id: createId('todo'),
-            noteId: note.id,
-            entryId: entry.id,
-            title: todo.title,
-            status: todo.status,
-            source: 'entry',
-            createdAt: now,
-            updatedAt: now,
-            completedAt: todo.status === 'done' ? now : undefined,
-          }));
+          const next = buildNoteFromContent(state, content);
           return {
             activeSection: 'notes',
-            selectedNoteId: note.id,
-            recentNoteIds: [note.id, ...state.recentNoteIds.filter((id) => id !== note.id)].slice(0, 10),
-            notes: [note, ...state.notes],
-            entries: [entry, ...state.entries],
-            todos: [...todos, ...state.todos],
+            selectedNoteId: next.note.id,
+            recentNoteIds: next.recentNoteIds,
+            notes: next.notes,
+            entries: next.entries,
+            todos: next.todos,
           };
         }),
       selectNote: (noteId) =>
@@ -449,7 +457,11 @@ export const useAppStore = create<AppState>()(
       merge: (persistedState, currentState) => ({
         ...currentState,
         ...(() => {
-          const { activities: _activities, ...rest } = persistedState as Partial<AppState> & { activities?: unknown };
+          const {
+            activities: _activities,
+            activeSection: _activeSection,
+            ...rest
+          } = persistedState as Partial<AppState> & { activities?: unknown };
           return rest;
         })(),
         shortcuts: {
@@ -468,6 +480,7 @@ export function snapshotAppState(state: AppState): AppStateSnapshot {
     activeSection: state.activeSection,
     selectedNoteId: state.selectedNoteId,
     query: state.query,
+    searchFocused: state.searchFocused,
     notes: state.notes,
     entries: state.entries,
     todos: state.todos,
@@ -489,4 +502,42 @@ function firstTitleFromContent(content: string) {
   }
 
   return firstLine.replace(/^#+\s*/, '').slice(0, 80);
+}
+
+function buildNoteFromContent(state: AppState, content: string) {
+  const now = new Date().toISOString();
+  const title = firstTitleFromContent(content);
+  const note: Note = {
+    id: createId('note'),
+    title,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const entry: NoteEntry = {
+    id: createId('entry'),
+    noteId: note.id,
+    content,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const todos: Todo[] = parseTodosFromEntry(content).map((todo) => ({
+    id: createId('todo'),
+    noteId: note.id,
+    entryId: entry.id,
+    title: todo.title,
+    status: todo.status,
+    source: 'entry',
+    createdAt: now,
+    updatedAt: now,
+    completedAt: todo.status === 'done' ? now : undefined,
+  }));
+
+  return {
+    note,
+    entry,
+    recentNoteIds: [note.id, ...state.recentNoteIds.filter((id) => id !== note.id)].slice(0, 10),
+    notes: [note, ...state.notes],
+    entries: [entry, ...state.entries],
+    todos: [...todos, ...state.todos],
+  };
 }

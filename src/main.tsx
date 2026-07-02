@@ -11,11 +11,11 @@ import {
   Database,
   Copy,
   HelpCircle,
-  Eye,
   Image as ImageIcon,
   Keyboard,
   NotebookText,
   Pencil,
+  PencilLine,
   Plus,
   Moon,
   Upload,
@@ -61,7 +61,7 @@ import { parseTodosFromEntry } from './todo-parser';
 
 const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'notes', label: 'Notes', icon: NotebookText },
-  { id: 'todos', label: 'ToDo List', icon: CheckSquare },
+  { id: 'todos', label: 'ToDos', icon: CheckSquare },
   { id: 'timeline', label: 'Timeline', icon: Clock3 },
   { id: 'images', label: 'Images', icon: ImageIcon },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -72,11 +72,22 @@ function App() {
   const hasContent = useAppStore((state) => state.notes.length > 0 || state.todos.length > 0);
   const activeSection = useAppStore((state) => state.activeSection);
   const query = useAppStore((state) => state.query.trim());
+  const searchFocused = useAppStore((state) => state.searchFocused);
   const theme = useAppStore((state) => state.theme);
+  const notes = useAppStore((state) => state.notes);
+  const recentNoteIds = useAppStore((state) => state.recentNoteIds);
+  const setActiveSection = useAppStore((state) => state.setActiveSection);
+  const selectNote = useAppStore((state) => state.selectNote);
+  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   useKeyboardShortcuts();
   useTheme(theme);
+  useOpenLatestNoteOnStartup(notes, recentNoteIds, setActiveSection, selectNote, clearSelectedNote);
   const showSearchResults =
-    Boolean(query) && activeSection !== 'new' && activeSection !== 'settings' && activeSection !== 'help' && activeSection !== 'images';
+    (searchFocused || Boolean(query)) &&
+    activeSection !== 'new' &&
+    activeSection !== 'settings' &&
+    activeSection !== 'help' &&
+    activeSection !== 'images';
 
   return (
     <div className="app-shell flex h-screen bg-slate-50 text-slate-950">
@@ -84,7 +95,7 @@ function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         {showSearchResults ? <SearchResultsPage query={query} /> : null}
         {activeSection === 'timeline' && !showSearchResults ? (hasContent ? <Timeline /> : <TimelineEmptyState />) : null}
-        {activeSection === 'new' ? <NewEntryPage /> : null}
+        {activeSection === 'new' && !showSearchResults ? <NewEntryPage /> : null}
         {activeSection === 'notes' && !showSearchResults ? <NotesWorkspace /> : null}
         {activeSection === 'todos' && !showSearchResults ? <TodosPage /> : null}
         {activeSection === 'images' ? <ImagesPage /> : null}
@@ -98,6 +109,11 @@ function App() {
 function useKeyboardShortcuts() {
   const shortcuts = useAppStore((state) => state.shortcuts);
   const undoLastDelete = useAppStore((state) => state.undoLastDelete);
+  const setActiveSection = useAppStore((state) => state.setActiveSection);
+  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
+  const searchFocused = useAppStore((state) => state.searchFocused);
+  const setSearchFocused = useAppStore((state) => state.setSearchFocused);
+  const setQuery = useAppStore((state) => state.setQuery);
 
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -106,9 +122,45 @@ function useKeyboardShortcuts() {
         ...shortcuts,
       };
 
+      if (isShortcutRecording()) {
+        return;
+      }
+
+      if (isShortcutRecorderTarget(event.target)) {
+        return;
+      }
+
       if (matchesShortcut(event, config.save)) {
+        if (event.repeat) {
+          return;
+        }
         event.preventDefault();
         window.dispatchEvent(new CustomEvent('otter:save'));
+        return;
+      }
+
+      if (matchesShortcut(event, config.new)) {
+        if (event.repeat) {
+          return;
+        }
+        event.preventDefault();
+        clearSelectedNote();
+        setActiveSection('new');
+        return;
+      }
+
+      if ((matchesShortcut(event, config.cancel) || event.key === 'Escape') && searchFocused) {
+        event.preventDefault();
+        setQuery('');
+        setSearchFocused(false);
+        document.querySelector<HTMLInputElement>('input[data-search-input="true"]')?.blur();
+        setActiveSection('notes');
+        return;
+      }
+
+      if (matchesShortcut(event, config.cancel) || event.key === 'Escape') {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent('otter:cancel'));
         return;
       }
 
@@ -124,7 +176,7 @@ function useKeyboardShortcuts() {
         return;
       }
 
-      if (matchesShortcut(event, config.undo) && !isTextInputTarget(event.target)) {
+      if (matchesShortcut(event, (shortcuts as Record<string, string>).undo ?? '') && !isTextInputTarget(event.target)) {
         event.preventDefault();
         undoLastDelete();
       }
@@ -132,7 +184,7 @@ function useKeyboardShortcuts() {
 
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [shortcuts, undoLastDelete]);
+  }, [clearSelectedNote, searchFocused, setActiveSection, setQuery, setSearchFocused, shortcuts, undoLastDelete]);
 }
 
 function Sidebar() {
@@ -140,6 +192,7 @@ function Sidebar() {
   const theme = useAppStore((state) => state.theme);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
   const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
+  const setSearchFocused = useAppStore((state) => state.setSearchFocused);
   const query = useAppStore((state) => state.query);
   const setQuery = useAppStore((state) => state.setQuery);
   const notes = useAppStore((state) => state.notes);
@@ -168,17 +221,44 @@ function Sidebar() {
     <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r border-blue-100 bg-blue-50/80">
       <div className="px-3 pt-3">
         <div className="px-1 py-1.5">
-          <div className="flex items-center gap-3">
-            <img
-              src={logoSrc}
-              alt=""
-              aria-hidden="true"
-              className="h-10 w-10 rounded-xl object-cover"
-            />
-            <div className="min-w-0">
-              <div className="truncate text-lg font-semibold text-blue-950">OtterNote</div>
-              <div className="truncate text-[11px] text-slate-500">Notes, todo, timeline</div>
-            </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="flex min-w-0 items-center gap-3 text-left"
+              onClick={() => {
+                const latest = recentNotes[0];
+                if (latest) {
+                  selectNote(latest.id);
+                  return;
+                }
+
+                clearSelectedNote();
+                setActiveSection('new');
+              }}
+            >
+              <img
+                src={logoSrc}
+                alt=""
+                aria-hidden="true"
+                className="h-10 w-10 rounded-xl object-cover"
+              />
+              <div className="min-w-0">
+                <div className="truncate text-lg font-semibold text-blue-950">OtterNote</div>
+                <div className="truncate text-[11px] text-slate-500">Notes, todo, timeline</div>
+              </div>
+            </button>
+            <button
+              type="button"
+              className="secondary-button ml-auto h-9 w-9 shrink-0 p-0"
+              onClick={() => {
+                clearSelectedNote();
+                setActiveSection('new');
+              }}
+              title="New note"
+              aria-label="New note"
+            >
+              <PencilLine className="h-4 w-4" />
+            </button>
           </div>
         </div>
       </div>
@@ -186,25 +266,23 @@ function Sidebar() {
       <div className="px-3">
         <label className="relative block">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onFocus={() => setActiveSection('notes')}
-            placeholder="Search notes, todos..."
-            className="h-10 w-full rounded-md border border-blue-100 bg-white pl-9 pr-3 text-sm outline-none ring-blue-200 focus:ring-2"
-          />
+            <input
+              data-search-input="true"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onFocus={() => {
+                setSearchFocused(true);
+                setActiveSection('notes');
+              }}
+              onBlur={() => setSearchFocused(false)}
+              placeholder="Search notes, todos..."
+              className="h-10 w-full rounded-md border border-blue-100 bg-white pl-9 pr-3 text-sm outline-none ring-blue-200 focus:ring-2"
+            />
         </label>
       </div>
 
-      <div className="px-3 py-2.5">
-        <button className="primary-button h-10 w-full" onClick={() => setActiveSection('new')}>
-          <Plus className="h-4 w-4" />
-          New
-        </button>
-      </div>
-
-      <section className="min-h-0 flex-1 overflow-y-auto px-3">
-        <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recent opened</div>
+      <section className="min-h-0 flex-1 overflow-y-auto px-3 pt-1">
+        <div className="mb-0.5 px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recent opened</div>
         {recentNotes.length === 0 ? (
           <p className="rounded-md border border-dashed border-blue-200 bg-white/60 p-3 text-sm text-slate-500">
             No recently opened notes.
@@ -215,7 +293,7 @@ function Sidebar() {
               <button
                 key={note.id}
                 className={`sidebar-item w-full rounded-md px-3 py-0.5 text-left text-[13px] leading-5 ${
-                  selectedNoteId === note.id ? 'sidebar-selected shadow-sm' : 'text-slate-700 hover:bg-white'
+                  selectedNoteId === note.id ? 'sidebar-selected' : 'text-slate-700 hover:bg-slate-50'
                 }`}
                 onClick={() => selectNote(note.id)}
               >
@@ -242,7 +320,7 @@ function Sidebar() {
               <button
                 key={item.id}
                 className={`sidebar-item flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-[13px] font-medium leading-5 ${
-                  active ? 'sidebar-selected' : 'text-slate-700 hover:bg-white'
+                  active ? 'sidebar-selected' : 'text-slate-700 hover:bg-slate-50'
                 }`}
                 onClick={() => {
                   setActiveSection(item.id);
@@ -307,80 +385,83 @@ function TimelineEmptyState() {
 
 function NewEntryPage() {
   const createNoteWithEntry = useAppStore((state) => state.createNoteWithEntry);
+  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
   const [draft, setDraft] = React.useState('');
-  const [isPreviewing, setIsPreviewing] = React.useState(false);
+  const [status, setStatus] = React.useState('');
   const editorViewRef = React.useRef<EditorView | null>(null);
+  const updateDraft = React.useCallback((value: React.SetStateAction<string>) => {
+    setDraft((current) => (typeof value === 'function' ? value(current) : value));
+  }, []);
 
   const insertImage = React.useCallback(async () => {
     try {
       const image = await chooseMarkdownImage();
       if (!image) return;
 
-      insertMarkdownAtCursor(editorViewRef.current, `![${image.altText}](${image.markdownUrl})`, setDraft);
+      insertMarkdownAtCursor(editorViewRef.current, `![${image.altText}](${image.markdownUrl})`, updateDraft);
+      setStatus(`Image inserted: ${image.altText}`);
     } catch (currentError) {
       window.alert(errorMessage(currentError));
     }
-  }, []);
+  }, [updateDraft]);
 
   const saveDraft = React.useCallback(() => {
-    if (!draft.trim()) return;
-    createNoteWithEntry(draft);
+    const content = draft.trim();
+    if (!content) {
+      return;
+    }
+
+    createNoteWithEntry(content);
     setDraft('');
-    setIsPreviewing(false);
   }, [createNoteWithEntry, draft]);
 
   React.useEffect(() => {
     const onSave = () => saveDraft();
+    const onCancel = () => {
+      setDraft('');
+      setStatus('');
+      clearSelectedNote();
+      setActiveSection('notes');
+    };
     window.addEventListener('otter:save', onSave);
-    return () => window.removeEventListener('otter:save', onSave);
-  }, [saveDraft]);
+    window.addEventListener('otter:cancel', onCancel);
+    return () => {
+      window.removeEventListener('otter:save', onSave);
+      window.removeEventListener('otter:cancel', onCancel);
+    };
+  }, [clearSelectedNote, saveDraft, setActiveSection]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-white">
       <header className="border-b border-slate-200 px-6 py-4">
-        <h1 className="text-lg font-semibold">New</h1>
-        <p className="mt-1 text-sm text-slate-500">Write a note and capture ToDo items inline.</p>
+        <h1 className="text-lg font-semibold">New Note</h1>
+        <p className="mt-1 text-sm text-slate-500">Write quickly, then save to create a note.</p>
       </header>
       <WorkspaceToolbar
-        mode={isPreviewing ? 'preview' : 'edit'}
-        showPreviewButton
-        onInsertImage={isPreviewing ? undefined : insertImage}
-        onTogglePreview={() => setIsPreviewing((value) => !value)}
+        mode="edit"
+        showEditButton={false}
+        onInsertImage={insertImage}
         onSave={saveDraft}
-        onCancel={() => {
-          setDraft('');
-          setIsPreviewing(false);
-          setActiveSection('timeline');
-        }}
         onDelete={undefined}
-        previewLabel="Preview"
-        editLabel="Edit"
         saveLabel="Save"
-        cancelLabel="Cancel"
       />
+      {status ? <div className="px-6 pt-2 text-xs text-slate-500">{status}</div> : null}
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        {isPreviewing ? (
-          <div className="mx-auto w-full max-w-3xl">
-            <div className="rounded-lg bg-white p-4">
-              {draft.trim() ? <MarkdownContent content={draft} /> : <EmptyMessage title="Empty draft" message="Type content to preview it." />}
-            </div>
-          </div>
-        ) : (
-          <div className="editor-shell mx-auto w-full max-w-3xl">
-            <CodeMirror
-              value={draft}
-              height="100%"
-              extensions={[markdown(), imagePasteExtension((file, view) => insertImageFile(file, setDraft, view))]}
-              basicSetup={{ lineNumbers: false, foldGutter: false }}
-              onChange={setDraft}
-              onCreateEditor={(view) => {
-                editorViewRef.current = view;
-              }}
-              placeholder={'Start writing...\n\n- [ ] Add a ToDo'}
-            />
-          </div>
-        )}
+        <div className="editor-shell mx-auto w-full max-w-3xl">
+          <CodeMirror
+            value={draft}
+            height="100%"
+            extensions={[markdown(), imagePasteExtension((file, view) => insertImageFile(file, updateDraft, view))]}
+            basicSetup={{ lineNumbers: false, foldGutter: false }}
+            onChange={setDraft}
+            onCreateEditor={(view) => {
+              editorViewRef.current = view;
+              view.focus();
+            }}
+            placeholder={'Start writing...\n\n- [ ] Add a ToDo'}
+          />
+        </div>
       </div>
     </div>
   );
@@ -404,7 +485,7 @@ function Timeline() {
                 {group.notes.map((note) => (
                   <button
                     key={note.id}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:bg-slate-50"
+                    className="surface-card surface-card-hover w-full rounded-lg border px-4 py-3 text-left"
                     onClick={() => selectNote(note.id)}
                   >
                     <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
@@ -429,8 +510,17 @@ function NotesWorkspace() {
 
 function NotesListPage() {
   const notes = useAppStore((state) => state.notes);
+  const entries = useAppStore((state) => state.entries);
+  const todos = useAppStore((state) => state.todos);
   const selectNote = useAppStore((state) => state.selectNote);
   const sortedNotes = React.useMemo(() => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [notes]);
+  const previewByNoteId = React.useMemo(() => {
+    const next = new Map<string, string>();
+    for (const note of sortedNotes) {
+      next.set(note.id, summarizeNotePreview(note.id, entries, todos));
+    }
+    return next;
+  }, [entries, sortedNotes, todos]);
 
   return (
     <Page title="Notes" subtitle="All notes">
@@ -441,10 +531,11 @@ function NotesListPage() {
           sortedNotes.map((note) => (
             <button
               key={note.id}
-              className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:bg-slate-50"
+              className="surface-card surface-card-hover w-full rounded-lg border px-4 py-3 text-left"
               onClick={() => selectNote(note.id)}
             >
               <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
+              <div className="mt-1 text-sm text-slate-600">{previewByNoteId.get(note.id) ?? 'No content yet.'}</div>
               <div className="mt-1 text-xs text-slate-500">
                 Created {formatDate(note.createdAt)} · Updated {formatDate(note.updatedAt)}
               </div>
@@ -466,6 +557,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [draftEntryId, setDraftEntryId] = React.useState<string | null>(null);
   const [draftContent, setDraftContent] = React.useState('');
+  const [status, setStatus] = React.useState('');
   const editorViewRef = React.useRef<EditorView | null>(null);
   const entries = React.useMemo(() => {
     if (bundle) {
@@ -560,6 +652,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
       if (!image) return;
 
       insertMarkdownAtCursor(editorViewRef.current, `![${image.altText}](${image.markdownUrl})`, setDraftContent);
+      setStatus(`Image inserted: ${image.altText}`);
     } catch (currentError) {
       window.alert(errorMessage(currentError));
     }
@@ -568,6 +661,11 @@ function NoteDetail({ noteId }: { noteId: string }) {
   React.useEffect(() => {
     const onEdit = () => startEditing();
     const onDelete = () => deleteCurrentNote();
+    const onCancel = () => {
+      if (isEditing) {
+        cancelEditing();
+      }
+    };
     const onSave = () => {
       if (isEditing) {
         saveDraft();
@@ -576,13 +674,15 @@ function NoteDetail({ noteId }: { noteId: string }) {
 
     window.addEventListener('otter:edit', onEdit);
     window.addEventListener('otter:delete', onDelete);
+    window.addEventListener('otter:cancel', onCancel);
     window.addEventListener('otter:save', onSave);
     return () => {
       window.removeEventListener('otter:edit', onEdit);
       window.removeEventListener('otter:delete', onDelete);
+      window.removeEventListener('otter:cancel', onCancel);
       window.removeEventListener('otter:save', onSave);
     };
-  }, [deleteCurrentNote, isEditing, saveDraft, startEditing]);
+  }, [cancelEditing, deleteCurrentNote, isEditing, saveDraft, startEditing]);
 
   if (!note) return null;
 
@@ -601,24 +701,15 @@ function NoteDetail({ noteId }: { noteId: string }) {
       </header>
       <WorkspaceToolbar
         mode={isEditing ? 'edit' : 'preview'}
-        showPreviewButton={isEditing}
+        showEditButton={true}
         onExport={exportCurrentNote}
         onInsertImage={isEditing ? insertImage : undefined}
-        onTogglePreview={() => {
-          if (isEditing) {
-            cancelEditing();
-          } else {
-            startEditing();
-          }
-        }}
         onSave={saveDraft}
-        onCancel={cancelEditing}
+        onEdit={startEditing}
         onDelete={deleteCurrentNote}
-        previewLabel="Preview"
-        editLabel="Edit"
         saveLabel="Save"
-        cancelLabel="Cancel"
       />
+      {status ? <div className="px-6 pt-2 text-xs text-slate-500">{status}</div> : null}
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
         <div className="mx-auto w-full max-w-3xl space-y-3.5">
           {isEditing ? (
@@ -636,7 +727,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
               />
             </div>
           ) : entries.length === 0 ? (
-            <article className="bg-white p-4">
+            <article className="surface-card p-4">
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="text-sm italic text-slate-400">
@@ -644,7 +735,6 @@ function NoteDetail({ noteId }: { noteId: string }) {
                   </div>
                 </div>
               </div>
-              <div className="mt-3 text-xs text-slate-400">{formatDate(note.updatedAt)}</div>
             </article>
           ) : (
             entries.map((entry) => <EntryCard key={entry.id} entryId={entry.id} />)
@@ -657,75 +747,51 @@ function NoteDetail({ noteId }: { noteId: string }) {
 
 function WorkspaceToolbar({
   mode,
-  showPreviewButton = true,
+  showEditButton = true,
   onExport,
   onInsertImage,
-  onTogglePreview,
   onSave,
-  onCancel,
+  onEdit,
   onDelete,
-  previewLabel,
-  editLabel,
   saveLabel,
-  cancelLabel,
 }: {
   mode: 'preview' | 'edit';
-  showPreviewButton?: boolean;
+  showEditButton?: boolean;
   onExport?: () => void;
   onInsertImage?: () => void;
-  onTogglePreview: () => void;
   onSave: () => void;
-  onCancel: () => void;
+  onEdit?: () => void;
   onDelete?: () => void;
-  previewLabel: string;
-  editLabel: string;
   saveLabel: string;
-  cancelLabel: string;
 }) {
   return (
     <div className="border-b border-slate-200 px-6 py-3">
       <div className="flex flex-wrap items-center justify-end gap-2">
         {onExport ? (
-          <button className="secondary-button" onClick={onExport}>
+          <button type="button" className="secondary-button" onClick={onExport}>
             <Download className="h-4 w-4" />
             Export
           </button>
         ) : null}
         {mode === 'edit' && onInsertImage ? (
-          <button className="secondary-button" onClick={onInsertImage}>
+          <button type="button" className="secondary-button" onClick={onInsertImage}>
             <ImageIcon className="h-4 w-4" />
             Image
           </button>
         ) : null}
-        {showPreviewButton ? (
-          <button
-            className={`secondary-button ${mode === 'preview' ? 'bg-slate-100 text-slate-800' : ''}`}
-            onClick={onTogglePreview}
-            aria-pressed={mode === 'preview'}
-          >
-            <Eye className="h-4 w-4" />
-            {previewLabel}
+        {mode === 'edit' ? (
+          <button type="button" className="primary-button" onClick={onSave}>
+            <Save className="h-4 w-4" />
+            {saveLabel}
+          </button>
+        ) : showEditButton ? (
+          <button type="button" className="secondary-button" onClick={onEdit}>
+            <Pencil className="h-4 w-4" />
+            Edit
           </button>
         ) : null}
-        {mode === 'edit' ? (
-          <>
-            <button className="secondary-button" onClick={onCancel}>
-              <X className="h-4 w-4" />
-              {cancelLabel}
-            </button>
-            <button className="primary-button" onClick={onSave}>
-              <Save className="h-4 w-4" />
-              {saveLabel}
-            </button>
-          </>
-        ) : (
-          <button className="secondary-button" onClick={onTogglePreview}>
-            <Pencil className="h-4 w-4" />
-            {editLabel}
-          </button>
-        )}
         {onDelete ? (
-          <button className="secondary-button text-red-700 hover:bg-red-50" onClick={onDelete}>
+          <button type="button" className="secondary-button text-red-700 hover:bg-red-50" onClick={onDelete}>
             <Trash2 className="h-4 w-4" />
             Delete
           </button>
@@ -740,6 +806,55 @@ function useTheme(theme: ThemeMode) {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
   }, [theme]);
+}
+
+function useOpenLatestNoteOnStartup(
+  notes: Array<{ id: string; updatedAt: string }>,
+  recentNoteIds: string[],
+  setActiveSection: (section: NavSection) => void,
+  selectNote: (noteId: string) => void,
+  clearSelectedNote: () => void,
+) {
+  const [hydrated, setHydrated] = React.useState(() => useAppStore.persist.hasHydrated?.() ?? false);
+  const appliedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (hydrated) {
+      return;
+    }
+
+    const unsubscribe = useAppStore.persist.onFinishHydration?.(() => {
+      setHydrated(true);
+    });
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, [hydrated]);
+
+  React.useEffect(() => {
+    if (!hydrated || appliedRef.current) {
+      return;
+    }
+
+    appliedRef.current = true;
+
+    if (notes.length === 0) {
+      clearSelectedNote();
+      setActiveSection('new');
+      return;
+    }
+
+    const noteById = new Map(notes.map((note) => [note.id, note] as const));
+    const recent = recentNoteIds.map((id) => noteById.get(id)).find(Boolean);
+    const latest = [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    const target = recent ?? latest;
+
+    if (target) {
+      selectNote(target.id);
+      setActiveSection('notes');
+    }
+  }, [clearSelectedNote, hydrated, notes, recentNoteIds, selectNote, setActiveSection]);
 }
 
 type MarkdownImage = {
@@ -1147,14 +1262,12 @@ function EntryCard({ entryId }: { entryId: string }) {
 
   if (!entry) return null;
 
-  const visibleContent = stripTaskLines(entry.content);
-
   return (
     <article className="bg-white p-4">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          {visibleContent ? (
-            <MarkdownContent content={visibleContent} />
+          {entry.content.trim() ? (
+            <MarkdownContent content={entry.content} />
           ) : (
             <div className="text-sm italic text-slate-400">No note text. This entry contains only ToDo items.</div>
           )}
@@ -1175,7 +1288,6 @@ function EntryCard({ entryId }: { entryId: string }) {
           ))}
         </div>
       ) : null}
-      <div className="mt-3 text-xs text-slate-400">{formatDate(entry.createdAt)}</div>
     </article>
   );
 }
@@ -1185,9 +1297,21 @@ function TodosPage() {
   const toggleTodo = useAppStore((state) => state.toggleTodo);
   const deleteTodo = useAppStore((state) => state.deleteTodo);
   const notes = useAppStore((state) => state.notes);
+  const selectNote = useAppStore((state) => state.selectNote);
+
+  const openTodoSource = React.useCallback(
+    (todo: { noteId?: string }) => {
+      if (!todo.noteId) {
+        return;
+      }
+
+      selectNote(todo.noteId);
+    },
+    [selectNote],
+  );
 
   return (
-    <Page title="ToDo List" subtitle="All standalone and note-sourced tasks">
+    <Page title="ToDos" subtitle="Tasks extracted from notes">
       <div className="mx-auto w-full max-w-3xl space-y-2">
         {todos.length === 0 ? (
           <EmptyMessage title="No ToDo items" message="Create standalone tasks or add - [ ] inside a note entry." />
@@ -1195,18 +1319,37 @@ function TodosPage() {
           todos.map((todo) => {
             const source = notes.find((note) => note.id === todo.noteId)?.title ?? 'Standalone';
             return (
-              <div key={todo.id} className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-4">
+              <div key={todo.id} className="surface-card surface-card-hover flex items-center gap-3 rounded-lg border p-4">
                 <input
                   type="checkbox"
                   checked={todo.status === 'done'}
                   onChange={(event) => toggleTodo(todo.id, event.target.checked)}
-                  className="mt-1"
+                  className="shrink-0"
                 />
-                <div className="min-w-0 flex-1">
-                  <div className={todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-900'}>{todo.title}</div>
-                  <div className="mt-1 text-xs text-slate-500">Source: {source}</div>
-                </div>
-                <button className="rounded-md p-1 text-slate-400 hover:bg-red-50 hover:text-red-600" onClick={() => deleteTodo(todo.id)}>
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left"
+                  onClick={() => openTodoSource(todo)}
+                  disabled={!todo.noteId}
+                >
+                  <div
+                    className={`text-sm font-medium ${
+                      todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-900'
+                    }`}
+                  >
+                    {todo.title}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Created {formatDate(todo.createdAt)}
+                    <span className="mx-1 text-slate-300">·</span>
+                    {todo.noteId ? 'Open note: ' : 'Source: '}
+                    <span className={todo.noteId ? 'font-medium text-slate-700 hover:text-slate-900' : ''}>{source}</span>
+                  </div>
+                </button>
+                <button
+                  className="rounded-md p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  onClick={() => deleteTodo(todo.id)}
+                >
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
@@ -1318,7 +1461,7 @@ function ImagesPage() {
           attachments.map((item) => {
             const usageCount = attachmentUsage.get(item.fileName) ?? 0;
             return (
-              <div key={item.fileName} className="flex items-center gap-4 rounded-lg border border-slate-200 bg-white p-4">
+              <div key={item.fileName} className="surface-card flex items-center gap-4 rounded-lg border p-4">
                 <button
                   className="shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-50"
                   onClick={() => setViewerFileName(item.originalFileName)}
@@ -1385,14 +1528,21 @@ function ImagesPage() {
 function SearchResultsPage({ query }: { query: string }) {
   const selectNote = useAppStore((state) => state.selectNote);
   const setQuery = useAppStore((state) => state.setQuery);
-
   const [results, setResults] = React.useState<Array<{ noteId: string; title: string; updatedAt: string; preview: string }>>([]);
+  const normalizedQuery = query.trim();
 
   React.useEffect(() => {
     let cancelled = false;
+    if (!normalizedQuery) {
+      setResults([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const run = async () => {
       try {
-        const next = await searchNotes(query);
+        const next = await searchNotes(normalizedQuery);
         if (!cancelled) {
           setResults(next);
         }
@@ -1407,12 +1557,14 @@ function SearchResultsPage({ query }: { query: string }) {
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [normalizedQuery]);
 
   return (
-    <Page title="Search" subtitle={`Results for "${query}"`}>
+    <Page title="Search" subtitle={normalizedQuery ? `Results for "${query}"` : 'Type to search notes and ToDos'}>
       <div className="mx-auto w-full max-w-4xl space-y-5">
-        {results.length === 0 ? (
+        {!normalizedQuery ? (
+          <EmptyMessage title="Search your notes" message="Type in the search box to see matching notes, entries, and ToDos." />
+        ) : results.length === 0 ? (
           <EmptyMessage title="No matches" message="Try searching by note title, entry content, or ToDo text." />
         ) : null}
 
@@ -1423,7 +1575,7 @@ function SearchResultsPage({ query }: { query: string }) {
               {results.map((item) => (
                 <button
                   key={item.noteId}
-                  className="w-full rounded-lg border border-slate-200 bg-white p-4 text-left hover:bg-slate-50"
+                  className="surface-card surface-card-hover w-full rounded-lg border p-4 text-left"
                   onClick={() => {
                     setQuery('');
                     selectNote(item.noteId);
@@ -1452,13 +1604,13 @@ function SettingsPage() {
       <div className="mx-auto w-full max-w-2xl space-y-4">
         <StorageSettings />
         <BackupSettings />
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
+        <div className="surface-card rounded-lg border p-5">
           <div className="flex items-center gap-2 font-medium">
             <Moon className="h-4 w-4" />
             Theme
           </div>
           <p className="mt-1 text-sm text-slate-500">Switch between light and dark mode.</p>
-          <div className="mt-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
+          <div className="theme-toggle mt-4">
             {[
               { id: 'light', label: 'Light', icon: SunMedium },
               { id: 'dark', label: 'Dark', icon: Moon },
@@ -1468,9 +1620,7 @@ function SettingsPage() {
               return (
                 <button
                   key={item.id}
-                  className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${
-                    active ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-                  }`}
+                  className={`theme-toggle-option ${active ? 'theme-toggle-option-active' : 'theme-toggle-option-inactive'}`}
                   aria-pressed={active}
                   onClick={() => setTheme(item.id as 'light' | 'dark')}
                 >
@@ -1481,13 +1631,13 @@ function SettingsPage() {
             })}
           </div>
         </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
+        <div className="surface-card rounded-lg border p-5">
           <div className="flex items-center gap-2 font-medium">
             <Keyboard className="h-4 w-4" />
             Keyboard shortcuts
           </div>
           <div className="mt-4 space-y-3">
-            {(['save', 'edit', 'delete', 'undo'] as ShortcutAction[]).map((action) => (
+            {(['new', 'save', 'edit', 'delete', 'cancel'] as ShortcutAction[]).map((action) => (
               <ShortcutInput
                 key={action}
                 action={action}
@@ -1549,7 +1699,7 @@ function BackupSettings() {
   }, [replaceAppState]);
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
+    <div className="surface-card rounded-lg border p-5">
       <div className="flex items-center gap-2 font-medium">
         <Upload className="h-4 w-4" />
         Backup
@@ -1708,7 +1858,7 @@ function StorageSettings() {
   };
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
+    <div className="surface-card rounded-lg border p-5">
       <div className="flex items-center gap-2 font-medium">
         <Database className="h-4 w-4" />
         Local storage
@@ -1733,7 +1883,7 @@ function StorageSettings() {
               Leave empty to use the default app data folder.
             </div>
           </div>
-          <div className="rounded-md bg-slate-50 p-3 text-xs text-slate-500">
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
             Current folder: <span className="font-mono text-slate-700">{storageInfo?.path ?? 'Loading...'}</span>
           </div>
           <div className="flex justify-end gap-2">
@@ -1762,7 +1912,7 @@ function StorageSettings() {
 function HelpPage() {
   return (
     <Page title="Help" subtitle="Minimum usage guide">
-      <div className="mx-auto w-full max-w-2xl rounded-lg border border-slate-200 bg-white p-5">
+      <div className="surface-card mx-auto w-full max-w-2xl rounded-lg border p-5">
         <div className="font-medium">Markdown ToDo</div>
         <pre className="mt-3 rounded-md bg-slate-950 p-4 text-sm text-slate-50">{'- [ ] incomplete task\n- [x] completed task'}</pre>
         <div className="mt-5 font-medium">Images</div>
@@ -1786,6 +1936,35 @@ function ShortcutInput({
 }) {
   const [isRecording, setIsRecording] = React.useState(false);
 
+  React.useEffect(() => {
+    if (!isRecording) {
+      return;
+    }
+
+    setShortcutRecording(true);
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        setIsRecording(false);
+        return;
+      }
+
+      const shortcut = shortcutFromKeyboardEvent(event);
+      if (shortcut) {
+        onChange(shortcut);
+        setIsRecording(false);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      setShortcutRecording(false);
+    };
+  }, [isRecording, onChange]);
+
   return (
     <div className="flex items-center justify-between gap-4">
       <div>
@@ -1794,18 +1973,13 @@ function ShortcutInput({
       </div>
       <button
         className={`min-w-40 rounded-md border px-3 py-2 text-left font-mono text-sm ${
-          isRecording ? 'border-blue-300 bg-blue-50 text-blue-900' : 'border-slate-200 bg-white text-slate-700'
+          isRecording
+            ? 'border-[color:var(--app-selected-border)] bg-[color:var(--app-selected-surface)] text-[color:var(--app-selected-foreground)]'
+            : 'border-slate-200 bg-white text-slate-700'
         }`}
         onClick={() => setIsRecording(true)}
         onBlur={() => setIsRecording(false)}
-        onKeyDown={(event) => {
-          event.preventDefault();
-          const shortcut = shortcutFromKeyboardEvent(event.nativeEvent);
-          if (shortcut) {
-            onChange(shortcut);
-            setIsRecording(false);
-          }
-        }}
+        data-shortcut-recorder={isRecording ? 'true' : 'false'}
       >
         {isRecording ? 'Press keys...' : value}
       </button>
@@ -1989,21 +2163,8 @@ function useFilteredTodos() {
   }, [notes, query, todos]);
 }
 
-function stripTaskLines(content: string) {
-  return content
-    .split('\n')
-    .filter((line) => parseTodosFromEntry(line).length === 0)
-    .join('\n')
-    .trim();
-}
-
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
+  return formatCompactDateTime(value);
 }
 
 function displayTitle(title: string) {
@@ -2011,10 +2172,15 @@ function displayTitle(title: string) {
 }
 
 function formatTime(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
+  return formatCompactDateTime(value);
+}
+
+function formatCompactDateTime(value: string) {
+  const date = new Date(value);
+  const pad = (num: number) => String(num).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`;
 }
 
 function groupNotesByDate(notes: ReturnType<typeof useAppStore.getState>['notes']) {
@@ -2057,20 +2223,20 @@ function matchesShortcut(event: KeyboardEvent, shortcut: string) {
   if (!expected.key) return false;
 
   const key = normalizeKey(event.key);
-  const modPressed = event.metaKey || event.ctrlKey;
+  const primaryPressed = event.metaKey || event.ctrlKey;
 
   return (
     key === expected.key &&
     event.shiftKey === expected.shift &&
     event.altKey === expected.alt &&
-    (expected.mod ? modPressed : !event.metaKey && !event.ctrlKey)
+    (expected.primary ? primaryPressed : !event.metaKey && !event.ctrlKey)
   );
 }
 
 function parseShortcut(shortcut: string) {
   const parts = shortcut.split('+').map((part) => part.trim()).filter(Boolean);
   return {
-    mod: parts.some((part) => part.toLowerCase() === 'mod'),
+    primary: parts.some((part) => ['mod', 'cmd', 'command', 'meta', 'ctrl', 'control'].includes(part.toLowerCase())),
     shift: parts.some((part) => part.toLowerCase() === 'shift'),
     alt: parts.some((part) => part.toLowerCase() === 'alt' || part.toLowerCase() === 'option'),
     key: normalizeKey(parts[parts.length - 1] ?? ''),
@@ -2084,7 +2250,7 @@ function shortcutFromKeyboardEvent(event: KeyboardEvent) {
   }
 
   const parts: string[] = [];
-  if (event.metaKey || event.ctrlKey) parts.push('Mod');
+  if (event.metaKey || event.ctrlKey) parts.push('Cmd');
   if (event.shiftKey) parts.push('Shift');
   if (event.altKey) parts.push('Alt');
   parts.push(key);
@@ -2111,16 +2277,49 @@ function isTextInputTarget(target: EventTarget | null) {
   );
 }
 
+function isShortcutRecorderTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('[data-shortcut-recorder="true"]'));
+}
+
+function setShortcutRecording(value: boolean) {
+  document.documentElement.dataset.shortcutRecording = value ? 'true' : 'false';
+}
+
+function isShortcutRecording() {
+  return document.documentElement.dataset.shortcutRecording === 'true';
+}
+
+function normalizeShortcutLabel(shortcut: string) {
+  return shortcut
+    .split('+')
+    .map((part) => {
+      const trimmed = part.trim();
+      const lower = trimmed.toLowerCase();
+      if (['mod', 'cmd', 'command', 'meta', 'ctrl', 'control'].includes(lower)) {
+        return 'Cmd';
+      }
+      if (lower === 'escape') {
+        return 'Esc';
+      }
+      return trimmed;
+    })
+    .filter(Boolean)
+    .join('+');
+}
+
 function shortcutHelpText(action: ShortcutAction) {
   switch (action) {
+    case 'new':
+      return 'Open a new note composer.';
     case 'save':
       return 'Save the current new or edited content.';
     case 'edit':
       return 'Edit the current note content.';
     case 'delete':
       return 'Delete the current note.';
-    case 'undo':
-      return 'Restore the last deleted note, entry, or ToDo.';
+    case 'cancel':
+      return 'Cancel the current edit or close the current composer.';
   }
 }
 
@@ -2206,22 +2405,61 @@ function snippetFromContent(content: string, query: string) {
   return `${prefix}${content.slice(start, end).replace(/\s+/g, ' ')}${suffix}`;
 }
 
+function summarizeNotePreview(noteId: string, entries: ReturnType<typeof useAppStore.getState>['entries'], todos: ReturnType<typeof useAppStore.getState>['todos']) {
+  const noteEntries = entries.filter((entry) => entry.noteId === noteId);
+  const firstTextEntry = noteEntries.find((entry) => entry.content.trim());
+  const todoCount = todos.filter((todo) => todo.noteId === noteId).length;
+
+  if (!firstTextEntry) {
+    return todoCount > 0 ? `${todoCount} ToDo${todoCount === 1 ? '' : 's'}` : 'No content yet.';
+  }
+
+  const preview = compactPreviewText(firstTextEntry.content);
+  if (!preview) {
+    return todoCount > 0 ? `${todoCount} ToDo${todoCount === 1 ? '' : 's'}` : 'No content yet.';
+  }
+
+  return todoCount > 0 ? `${preview} · ${todoCount} ToDo${todoCount === 1 ? '' : 's'}` : preview;
+}
+
+function compactPreviewText(content: string) {
+  return content
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+\[[ xX]\]\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 140);
+}
+
 function normalizeImportedSnapshot(value: Partial<AppStateSnapshot>): AppStateSnapshot {
   return {
-    activeSection: value.activeSection ?? 'timeline',
+    activeSection: value.activeSection ?? 'notes',
     selectedNoteId: value.selectedNoteId,
     query: value.query ?? '',
+    searchFocused: false,
     notes: Array.isArray(value.notes) ? value.notes : [],
     entries: Array.isArray(value.entries) ? value.entries : [],
     todos: Array.isArray(value.todos) ? value.todos : [],
     recentNoteIds: Array.isArray(value.recentNoteIds) ? value.recentNoteIds : [],
     shortcuts: {
       ...defaultShortcuts,
-      ...(value.shortcuts ?? {}),
+      ...normalizeImportedShortcuts(value.shortcuts),
     },
     theme: value.theme ?? 'light',
     deletedStack: Array.isArray(value.deletedStack) ? value.deletedStack : [],
   };
+}
+
+function normalizeImportedShortcuts(shortcuts?: AppStateSnapshot['shortcuts']) {
+  if (!shortcuts) {
+    return {};
+  }
+
+  const { undo: _undo, ...rest } = shortcuts as Partial<AppStateSnapshot['shortcuts']> & { undo?: string };
+  return Object.fromEntries(
+    Object.entries(rest).map(([action, shortcut]) => [action, normalizeShortcutLabel(shortcut)]),
+  );
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
