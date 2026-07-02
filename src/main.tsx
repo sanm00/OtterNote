@@ -137,6 +137,7 @@ function useKeyboardShortcuts() {
 
 function Sidebar() {
   const activeSection = useAppStore((state) => state.activeSection);
+  const theme = useAppStore((state) => state.theme);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
   const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   const query = useAppStore((state) => state.query);
@@ -145,6 +146,7 @@ function Sidebar() {
   const recentNoteIds = useAppStore((state) => state.recentNoteIds);
   const selectedNoteId = useAppStore((state) => state.selectedNoteId);
   const selectNote = useAppStore((state) => state.selectNote);
+  const logoSrc = theme === 'dark' ? '/app-logo-dark.png' : '/app-logo.png';
 
   const recentNotes = React.useMemo(() => {
     const recent = recentNoteIds
@@ -168,7 +170,7 @@ function Sidebar() {
         <div className="px-1 py-1.5">
           <div className="flex items-center gap-3">
             <img
-              src="/app-logo.png"
+              src={logoSrc}
               alt=""
               aria-hidden="true"
               className="h-10 w-10 rounded-xl object-cover"
