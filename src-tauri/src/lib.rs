@@ -86,7 +86,6 @@ fn default_schema_version() -> u32 {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_sql::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             get_storage_info,
             read_app_state,
