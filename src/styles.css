@@ -111,24 +111,28 @@ button:disabled {
   @apply min-h-[28rem] rounded-lg bg-white p-3;
 }
 
-.theme-toggle {
-  @apply inline-flex rounded-lg border p-1;
-  background: var(--app-toggle-surface);
-  border-color: var(--app-toggle-border);
+.theme-choice-group {
+  @apply grid grid-cols-2 gap-2;
 }
 
-.theme-toggle-option {
-  @apply inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition;
-  color: #475569;
+.theme-choice {
+  @apply relative flex h-11 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50;
 }
 
-.theme-toggle-option-inactive {
-  color: #64748b;
+.theme-choice:has(input:focus-visible) {
+  @apply ring-2 ring-blue-200;
 }
 
-.theme-toggle-option:hover {
-  background: var(--app-hover-surface);
-  color: #0f172a;
+.theme-choice-active {
+  @apply border-blue-200 bg-blue-50 text-blue-900;
+}
+
+.theme-choice-dot {
+  @apply ml-auto h-2.5 w-2.5 rounded-full border border-slate-300 bg-white;
+}
+
+.theme-choice-active .theme-choice-dot {
+  @apply border-blue-700 bg-blue-700;
 }
 
 .surface-card {
@@ -145,10 +149,20 @@ button:disabled {
   border-color: #334155;
 }
 
-.theme-toggle-option-active {
-  background: var(--app-selected-surface);
-  color: var(--app-selected-foreground);
-  box-shadow: inset 0 0 0 1px var(--app-selected-border);
+[data-theme='dark'] .theme-choice {
+  @apply border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800;
+}
+
+[data-theme='dark'] .theme-choice-active {
+  @apply border-sky-500 bg-sky-500 text-slate-950;
+}
+
+[data-theme='dark'] .theme-choice-dot {
+  @apply border-slate-500 bg-slate-900;
+}
+
+[data-theme='dark'] .theme-choice-active .theme-choice-dot {
+  @apply border-slate-950 bg-slate-950;
 }
 
 [data-theme='light'] .sidebar-panel .sidebar-selected {

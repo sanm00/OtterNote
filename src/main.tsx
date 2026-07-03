@@ -10,6 +10,7 @@ import {
   Clock3,
   Database,
   Copy,
+  FolderOpen,
   HelpCircle,
   Image as ImageIcon,
   Keyboard,
@@ -29,7 +30,6 @@ import {
 } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
-import { isAbsolute } from '@tauri-apps/api/path';
 import './styles.css';
 import { createId } from './id';
 import {
@@ -53,7 +53,6 @@ import {
   setStoragePath,
   searchNotes,
   writeExportFile,
-  validateStoragePath,
   type ImageAttachment,
   type StorageInfo,
 } from './storage';
@@ -1608,7 +1607,7 @@ function SettingsPage() {
             Theme
           </div>
           <p className="mt-1 text-sm text-slate-500">Switch between light and dark mode.</p>
-          <div className="theme-toggle mt-4">
+          <div className="theme-choice-group mt-4" role="radiogroup" aria-label="Theme">
             {[
               { id: 'light', label: 'Light', icon: SunMedium },
               { id: 'dark', label: 'Dark', icon: Moon },
@@ -1616,15 +1615,22 @@ function SettingsPage() {
               const Icon = item.icon;
               const active = theme === item.id;
               return (
-                <button
+                <label
                   key={item.id}
-                  className={`theme-toggle-option ${active ? 'theme-toggle-option-active' : 'theme-toggle-option-inactive'}`}
-                  aria-pressed={active}
-                  onClick={() => setTheme(item.id as 'light' | 'dark')}
+                  className={`theme-choice ${active ? 'theme-choice-active' : ''}`}
                 >
+                  <input
+                    type="radio"
+                    name="theme"
+                    value={item.id}
+                    checked={active}
+                    onChange={() => setTheme(item.id as 'light' | 'dark')}
+                    className="sr-only"
+                  />
                   <Icon className="h-4 w-4" />
+                  <span className="theme-choice-dot" aria-hidden="true" />
                   {item.label}
-                </button>
+                </label>
               );
             })}
           </div>
@@ -1735,44 +1741,6 @@ function StorageSettings() {
   const [isPicking, setIsPicking] = React.useState(false);
   const tauriRuntime = isTauriRuntime();
 
-  const validateDraftPath = React.useCallback(async (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return '';
-    }
-
-    if (tauriRuntime) {
-      const absolute = await isAbsolute(trimmed);
-      if (!absolute && !trimmed.startsWith('~/')) {
-        return 'Storage folder must be an absolute path or start with ~/.'; 
-      }
-
-      try {
-        await validateStoragePath(trimmed);
-      } catch (currentError) {
-        return errorMessage(currentError);
-      }
-    }
-
-    return '';
-  }, [tauriRuntime]);
-
-  const [pathIssue, setPathIssue] = React.useState('');
-
-  React.useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      const issue = await validateDraftPath(draftPath);
-      if (!cancelled) {
-        setPathIssue(issue);
-      }
-    };
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [draftPath, validateDraftPath]);
-
   const refreshStorageInfo = React.useCallback(async () => {
     setError('');
     try {
@@ -1790,23 +1758,16 @@ function StorageSettings() {
     }
   }, [refreshStorageInfo, tauriRuntime]);
 
-  const savePath = async () => {
-    const issue = await validateDraftPath(draftPath);
-    if (issue) {
-      setPathIssue(issue);
-      setError(issue);
-      return;
-    }
-
+  const applyStoragePath = async (storagePath: string, successMessage: string) => {
     setIsSaving(true);
     setStatus('');
     setError('');
     try {
-      const info = await setStoragePath(draftPath);
+      const info = await setStoragePath(storagePath);
       setStorageInfo(info);
       setDraftPath(info.customPath ?? info.path);
       window.dispatchEvent(new CustomEvent('otter:storage-changed'));
-      setStatus('Storage folder saved.');
+      setStatus(successMessage);
     } catch (currentError) {
       setError(errorMessage(currentError));
     } finally {
@@ -1815,21 +1776,7 @@ function StorageSettings() {
   };
 
   const resetPath = async () => {
-    setDraftPath('');
-    setIsSaving(true);
-    setStatus('');
-    setError('');
-    try {
-      const info = await setStoragePath('');
-      setStorageInfo(info);
-      setDraftPath(info.path);
-      window.dispatchEvent(new CustomEvent('otter:storage-changed'));
-      setStatus('Storage folder reset to default.');
-    } catch (currentError) {
-      setError(errorMessage(currentError));
-    } finally {
-      setIsSaving(false);
-    }
+    await applyStoragePath('', 'Storage folder reset to default.');
   };
 
   const choosePath = async () => {
@@ -1846,7 +1793,7 @@ function StorageSettings() {
       });
 
       if (typeof selected === 'string' && selected.trim()) {
-        setDraftPath(selected);
+        await applyStoragePath(selected, 'Storage folder saved.');
       }
     } catch (currentError) {
       setError(errorMessage(currentError));
@@ -1865,36 +1812,38 @@ function StorageSettings() {
         <div className="mt-4 space-y-3">
           <label className="block">
             <span className="text-sm font-medium text-slate-700">Storage folder</span>
-            <input
-              value={draftPath}
-              onChange={(event) => setDraftPath(event.target.value)}
-              placeholder={storageInfo?.defaultPath ?? 'Default app data folder'}
-              className="mt-2 h-10 w-full rounded-md border border-slate-200 bg-white px-3 font-mono text-sm outline-none ring-blue-200 focus:ring-2"
-            />
-          </label>
-          <div className="flex flex-wrap justify-between gap-2">
-            <button className="secondary-button" disabled={isPicking || isSaving} onClick={choosePath}>
-              <Search className="h-4 w-4" />
-              Choose Folder
-            </button>
-            <div className="text-xs text-slate-500">
-              Leave empty to use the default app data folder.
+            <div className="relative mt-2">
+              <input
+                value={draftPath}
+                readOnly
+                disabled={isPicking || isSaving}
+                onClick={choosePath}
+                placeholder={storageInfo?.defaultPath ?? 'Default app data folder'}
+                className="h-10 w-full cursor-pointer rounded-md border border-slate-200 bg-white px-3 pr-20 font-mono text-sm outline-none ring-blue-200 focus:ring-2"
+              />
+              <button
+                type="button"
+                aria-label="Choose storage folder"
+                disabled={isPicking || isSaving}
+                onClick={choosePath}
+                className="secondary-button absolute right-10 top-1.5 h-7 w-7 !p-0"
+              >
+                <FolderOpen className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                aria-label="Use default storage folder"
+                disabled={isPicking || isSaving}
+                onClick={resetPath}
+                className="secondary-button absolute right-1.5 top-1.5 h-7 w-7 !p-0"
+              >
+                <RotateCcw className="h-4 w-4" />
+              </button>
             </div>
+          </label>
+          <div className="text-xs text-slate-500">
+            Choose a folder to save it immediately. Current folder: <span className="font-mono text-slate-700">{storageInfo?.path ?? 'Loading...'}</span>
           </div>
-          <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-            Current folder: <span className="font-mono text-slate-700">{storageInfo?.path ?? 'Loading...'}</span>
-          </div>
-          <div className="flex justify-end gap-2">
-            <button className="secondary-button" disabled={isSaving} onClick={resetPath}>
-              <RotateCcw className="h-4 w-4" />
-              Default
-            </button>
-            <button className="primary-button" disabled={isSaving || Boolean(pathIssue) || !draftPath.trim()} onClick={savePath}>
-              <Save className="h-4 w-4" />
-              Save Path
-            </button>
-          </div>
-          {pathIssue ? <div className="text-sm text-red-600">{pathIssue}</div> : null}
           {status ? <div className="text-sm text-green-700">{status}</div> : null}
           {error ? <div className="text-sm text-red-600">{error}</div> : null}
         </div>
@@ -1970,11 +1919,7 @@ function ShortcutInput({
         <div className="text-xs text-slate-500">{shortcutHelpText(action)}</div>
       </div>
       <button
-        className={`min-w-40 rounded-md border px-3 py-2 text-left font-mono text-sm ${
-          isRecording
-            ? 'border-[color:var(--app-selected-border)] bg-[color:var(--app-selected-surface)] text-[color:var(--app-selected-foreground)]'
-            : 'border-slate-200 bg-white text-slate-700'
-        }`}
+        className={`${isRecording ? 'primary-button' : 'secondary-button'} min-w-40 justify-start font-mono`}
         onClick={() => setIsRecording(true)}
         onBlur={() => setIsRecording(false)}
         data-shortcut-recorder={isRecording ? 'true' : 'false'}
