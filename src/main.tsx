@@ -219,8 +219,8 @@ function Sidebar() {
 
   return (
     <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r border-blue-100 bg-blue-50/80">
-      <div className="px-3 pt-3">
-        <div className="px-1 py-1.5">
+      <div className="px-3 pt-11">
+        <div className="px-1 pb-1.5">
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -236,12 +236,14 @@ function Sidebar() {
                 setActiveSection('new');
               }}
             >
-              <img
-                src={logoSrc}
-                alt=""
-                aria-hidden="true"
-                className="h-10 w-10 rounded-xl object-cover"
-              />
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[color:var(--app-toggle-surface)] ring-1 ring-[color:var(--app-toggle-border)]">
+                <img
+                  src={logoSrc}
+                  alt=""
+                  aria-hidden="true"
+                  className="h-8 w-8 rounded-lg object-cover"
+                />
+              </span>
               <div className="min-w-0">
                 <div className="truncate text-lg font-semibold text-blue-950">OtterNote</div>
                 <div className="truncate text-[11px] text-slate-500">Notes, todo, timeline</div>
@@ -249,7 +251,7 @@ function Sidebar() {
             </button>
             <button
               type="button"
-              className="secondary-button ml-auto h-9 w-9 shrink-0 p-0"
+              className="secondary-button ml-auto h-9 w-9 shrink-0 !p-0"
               onClick={() => {
                 clearSelectedNote();
                 setActiveSection('new');
@@ -257,7 +259,7 @@ function Sidebar() {
               title="New note"
               aria-label="New note"
             >
-              <PencilLine className="h-4 w-4" />
+              <Plus className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -434,10 +436,7 @@ function NewEntryPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-white">
-      <header className="border-b border-slate-200 px-6 py-4">
-        <h1 className="text-lg font-semibold">New Note</h1>
-        <p className="mt-1 text-sm text-slate-500">Write quickly, then save to create a note.</p>
-      </header>
+      <PageHeader title="New Note" subtitle="Write quickly, then save to create a note." />
       <WorkspaceToolbar
         mode="edit"
         showEditButton={false}
@@ -687,8 +686,8 @@ function NoteDetail({ noteId }: { noteId: string }) {
   if (!note) return null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-white">
-      <header className="border-b border-slate-200 px-6 py-4">
+    <div className="flex min-h-0 flex-1 flex-col bg-slate-50">
+      <PageHeader subtitle={`Updated ${formatDate(note.updatedAt)}`}>
         <div className="flex items-center gap-3">
           <input
             value={note.title}
@@ -697,8 +696,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
             className="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none"
           />
         </div>
-        <p className="mt-1 text-sm text-slate-500">Updated {formatDate(note.updatedAt)}</p>
-      </header>
+      </PageHeader>
       <WorkspaceToolbar
         mode={isEditing ? 'edit' : 'preview'}
         showEditButton={true}
@@ -727,7 +725,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
               />
             </div>
           ) : entries.length === 0 ? (
-            <article className="surface-card p-4">
+            <article className="p-4">
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="text-sm italic text-slate-400">
@@ -765,7 +763,7 @@ function WorkspaceToolbar({
   saveLabel: string;
 }) {
   return (
-    <div className="border-b border-slate-200 px-6 py-3">
+    <div className="border-b border-slate-200 bg-slate-50 px-6 py-3">
       <div className="flex flex-wrap items-center justify-end gap-2">
         {onExport ? (
           <button type="button" className="secondary-button" onClick={onExport}>
@@ -1263,7 +1261,7 @@ function EntryCard({ entryId }: { entryId: string }) {
   if (!entry) return null;
 
   return (
-    <article className="bg-white p-4">
+    <article className="p-4">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           {entry.content.trim() ? (
@@ -1990,12 +1988,26 @@ function ShortcutInput({
 function Page({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="border-b border-slate-200 bg-white px-6 py-3.5">
-        <h1 className="text-lg font-semibold">{title}</h1>
-        {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
-      </header>
+      <PageHeader title={title} subtitle={subtitle} />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
     </div>
+  );
+}
+
+function PageHeader({
+  title,
+  subtitle,
+  children,
+}: {
+  title?: string;
+  subtitle?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <header className="border-b border-slate-200 bg-slate-50 px-6 py-4">
+      {children ?? <h1 className="text-lg font-semibold">{title}</h1>}
+      {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
+    </header>
   );
 }
 
