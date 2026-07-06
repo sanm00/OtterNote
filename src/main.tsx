@@ -16,7 +16,6 @@ import {
   Keyboard,
   NotebookText,
   Pencil,
-  PencilLine,
   Plus,
   Moon,
   Upload,
@@ -56,7 +55,6 @@ import {
   type ImageAttachment,
   type StorageInfo,
 } from './storage';
-import { parseTodosFromEntry } from './todo-parser';
 
 const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'notes', label: 'Notes', icon: NotebookText },
@@ -341,39 +339,6 @@ function Sidebar() {
   );
 }
 
-function EmptyState() {
-  const setActiveSection = useAppStore((state) => state.setActiveSection);
-  const createStandaloneTodo = useAppStore((state) => state.createStandaloneTodo);
-  const setQuery = useAppStore((state) => state.setQuery);
-
-  return (
-    <div className="flex flex-1 items-center justify-center p-8">
-      <div className="w-full max-w-xl">
-        <h1 className="mb-3 text-center text-2xl font-semibold">Start with search or create</h1>
-        <label className="relative block">
-          <Search className="pointer-events-none absolute left-4 top-3.5 h-5 w-5 text-slate-400" />
-          <input
-            autoFocus
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search notes, todos..."
-            className="h-12 w-full rounded-lg border border-blue-100 bg-white pl-12 pr-4 outline-none ring-blue-200 focus:ring-2"
-          />
-        </label>
-        <div className="mt-5 flex justify-center gap-3">
-          <button className="primary-button h-11 px-5" onClick={() => setActiveSection('new')}>
-            <Plus className="h-4 w-4" />
-            New
-          </button>
-          <button className="secondary-button h-11 px-5" onClick={() => createStandaloneTodo('Untitled ToDo')}>
-            <CheckSquare className="h-4 w-4" />
-            New ToDo
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function TimelineEmptyState() {
   return (
     <Page title="Timeline" subtitle="Notes grouped by time">
@@ -385,15 +350,24 @@ function TimelineEmptyState() {
 }
 
 function NewEntryPage() {
+  const createNote = useAppStore((state) => state.createNote);
   const createNoteWithEntry = useAppStore((state) => state.createNoteWithEntry);
   const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
+  const [titleDraft, setTitleDraft] = React.useState('');
   const [draft, setDraft] = React.useState('');
   const [status, setStatus] = React.useState('');
   const editorViewRef = React.useRef<EditorView | null>(null);
-  const updateDraft = React.useCallback((value: React.SetStateAction<string>) => {
-    setDraft((current) => (typeof value === 'function' ? value(current) : value));
+  const updateTitleFromContent = React.useCallback((content: string) => {
+    setTitleDraft(titleFromFirstLine(content));
   }, []);
+  const updateDraft = React.useCallback((value: React.SetStateAction<string>) => {
+    setDraft((current) => {
+      const next = typeof value === 'function' ? value(current) : value;
+      updateTitleFromContent(next);
+      return next;
+    });
+  }, [updateTitleFromContent]);
 
   const insertImage = React.useCallback(async () => {
     try {
@@ -409,17 +383,25 @@ function NewEntryPage() {
 
   const saveDraft = React.useCallback(() => {
     const content = draft.trim();
-    if (!content) {
+    const title = titleDraft.trim();
+    if (!content && !title) {
       return;
     }
 
-    createNoteWithEntry(content);
+    if (content) {
+      createNoteWithEntry(content, title);
+    } else {
+      createNote(title);
+    }
+    setTitleDraft('');
     setDraft('');
-  }, [createNoteWithEntry, draft]);
+    setStatus('');
+  }, [createNote, createNoteWithEntry, draft, titleDraft]);
 
   React.useEffect(() => {
     const onSave = () => saveDraft();
     const onCancel = () => {
+      setTitleDraft('');
       setDraft('');
       setStatus('');
       clearSelectedNote();
@@ -435,7 +417,14 @@ function NewEntryPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-white">
-      <PageHeader title="New Note" subtitle="Write quickly, then save to create a note." />
+      <PageHeader subtitle="Write quickly, then save to create a note.">
+        <input
+          value={titleDraft}
+          onChange={(event) => setTitleDraft(event.target.value)}
+          placeholder="Untitled Note"
+          className="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none"
+        />
+      </PageHeader>
       <WorkspaceToolbar
         mode="edit"
         showEditButton={false}
@@ -452,7 +441,7 @@ function NewEntryPage() {
             height="100%"
             extensions={[markdown(), imagePasteExtension((file, view) => insertImageFile(file, updateDraft, view))]}
             basicSetup={{ lineNumbers: false, foldGutter: false }}
-            onChange={setDraft}
+            onChange={updateDraft}
             onCreateEditor={(view) => {
               editorViewRef.current = view;
               view.focus();
@@ -938,25 +927,6 @@ async function createMarkdownImageFromFile(file: File): Promise<MarkdownImage> {
   return { altText: extractAltText(file.name), markdownUrl: await readFileAsOptimizedDataUrl(file) };
 }
 
-function mimeTypeToExtension(mimeType: string) {
-  switch (mimeType.toLowerCase()) {
-    case 'image/jpeg':
-      return 'jpg';
-    case 'image/png':
-      return 'png';
-    case 'image/webp':
-      return 'webp';
-    case 'image/gif':
-      return 'gif';
-    case 'image/bmp':
-      return 'bmp';
-    case 'image/svg+xml':
-      return 'svg';
-    default:
-      return '';
-  }
-}
-
 function mimeTypeFromFileName(fileName: string) {
   switch (extractFileExtension(fileName).toLowerCase()) {
     case 'jpg':
@@ -1311,7 +1281,7 @@ function TodosPage() {
     <Page title="ToDos" subtitle="Tasks extracted from notes">
       <div className="mx-auto w-full max-w-3xl space-y-2">
         {todos.length === 0 ? (
-          <EmptyMessage title="No ToDo items" message="Create standalone tasks or add - [ ] inside a note entry." />
+          <EmptyMessage title="No ToDo items" message="Add - [ ] inside a note entry." />
         ) : (
           todos.map((todo) => {
             const source = notes.find((note) => note.id === todo.noteId)?.title ?? 'Standalone';
@@ -2128,6 +2098,12 @@ function displayTitle(title: string) {
   return title.trim() || 'Untitled Note';
 }
 
+function titleFromFirstLine(content: string) {
+  const firstLine = content.split('\n')[0]?.trim() ?? '';
+  const title = firstLine.replace(/^[^\p{L}\p{N}]+/u, '').trim();
+  return title.slice(0, 80);
+}
+
 function formatTime(value: string) {
   return formatCompactDateTime(value);
 }
@@ -2282,84 +2258,6 @@ function shortcutHelpText(action: ShortcutAction) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
-}
-
-function buildSearchResults(
-  query: string,
-  notes: ReturnType<typeof useAppStore.getState>['notes'],
-  entries: ReturnType<typeof useAppStore.getState>['entries'],
-  todos: ReturnType<typeof useAppStore.getState>['todos'],
-) {
-  if (!query) {
-    return { total: 0, notes: [], entries: [], todos: [] };
-  }
-
-  const noteResults = notes
-    .map((note) => {
-      const matchedEntry = entries.find(
-        (entry) => entry.noteId === note.id && entry.content.toLowerCase().includes(query),
-      );
-      const matchedTodo = todos.find(
-        (todo) => todo.noteId === note.id && todo.title.toLowerCase().includes(query),
-      );
-      if (
-        !note.title.toLowerCase().includes(query) &&
-        !matchedEntry &&
-        !matchedTodo
-      ) {
-        return null;
-      }
-
-      return {
-        note,
-        preview:
-          note.title.toLowerCase().includes(query)
-            ? 'Matched note title'
-            : matchedEntry
-              ? snippetFromContent(matchedEntry.content, query)
-              : `Matched ToDo: ${matchedTodo?.title ?? ''}`,
-      };
-    })
-    .filter((item): item is { note: (typeof notes)[number]; preview: string } => Boolean(item));
-
-  const entryResults = entries
-    .filter((entry) => entry.content.toLowerCase().includes(query))
-    .map((entry) => ({
-      entry,
-      note: notes.find((note) => note.id === entry.noteId)!,
-      preview: snippetFromContent(entry.content, query),
-    }))
-    .filter((item) => Boolean(item.note));
-
-  const todoResults = todos
-    .filter((todo) => todo.title.toLowerCase().includes(query))
-    .map((todo) => ({
-      todo,
-      note: notes.find((note) => note.id === todo.noteId),
-      source:
-        notes.find((note) => note.id === todo.noteId)?.title ?? 'Standalone',
-    }));
-
-  return {
-    total: noteResults.length + entryResults.length + todoResults.length,
-    notes: noteResults,
-    entries: entryResults,
-    todos: todoResults,
-  };
-}
-
-function snippetFromContent(content: string, query: string) {
-  const lower = content.toLowerCase();
-  const index = lower.indexOf(query);
-  if (index < 0) {
-    return content.slice(0, 120);
-  }
-
-  const start = Math.max(0, index - 40);
-  const end = Math.min(content.length, index + query.length + 80);
-  const prefix = start > 0 ? '...' : '';
-  const suffix = end < content.length ? '...' : '';
-  return `${prefix}${content.slice(start, end).replace(/\s+/g, ' ')}${suffix}`;
 }
 
 function summarizeNotePreview(noteId: string, entries: ReturnType<typeof useAppStore.getState>['entries'], todos: ReturnType<typeof useAppStore.getState>['todos']) {

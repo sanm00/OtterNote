@@ -75,8 +75,8 @@ type AppState = {
   updateShortcut: (action: ShortcutAction, shortcut: string) => void;
   setTheme: (theme: ThemeMode) => void;
   replaceAppState: (state: AppStateSnapshot) => void;
-  createNote: () => void;
-  createNoteWithEntry: (content: string) => void;
+  createNote: (title?: string) => void;
+  createNoteWithEntry: (content: string, title?: string) => void;
   selectNote: (noteId: string) => void;
   updateNoteTitle: (noteId: string, title: string) => void;
   deleteNote: (noteId: string) => void;
@@ -182,12 +182,12 @@ export const useAppStore = create<AppState>()(
           theme: snapshot.theme ?? defaultTheme,
           deletedStack: snapshot.deletedStack,
         }),
-      createNote: () =>
+      createNote: (title) =>
         set((state) => {
           const now = new Date().toISOString();
           const note: Note = {
             id: createId('note'),
-            title: 'Untitled Note',
+            title: title?.trim() || 'Untitled Note',
             createdAt: now,
             updatedAt: now,
           };
@@ -198,9 +198,9 @@ export const useAppStore = create<AppState>()(
             notes: [note, ...state.notes],
           };
         }),
-      createNoteWithEntry: (content) =>
+      createNoteWithEntry: (content, title) =>
         set((state) => {
-          const next = buildNoteFromContent(state, content);
+          const next = buildNoteFromContent(state, content, title);
           return {
             activeSection: 'notes',
             selectedNoteId: next.note.id,
@@ -231,7 +231,6 @@ export const useAppStore = create<AppState>()(
           if (!note) {
             return state;
           }
-          const now = new Date().toISOString();
           const entries = state.entries.filter((entry) => entry.noteId === noteId);
           const todos = state.todos.filter((todo) => todo.noteId === noteId);
           return {
@@ -275,7 +274,6 @@ export const useAppStore = create<AppState>()(
             updatedAt: now,
             completedAt: todo.status === 'done' ? now : undefined,
           }));
-          const noteTitle = state.notes.find((note) => note.id === noteId)?.title ?? 'Untitled Note';
           return {
             entries: [...state.entries, entry],
             todos: [...todos, ...state.todos],
@@ -314,8 +312,6 @@ export const useAppStore = create<AppState>()(
             };
           });
 
-          const noteTitle =
-            state.notes.find((note) => note.id === existingEntry.noteId)?.title || 'Untitled Note';
           return {
             entries: state.entries.map((entry) =>
               entry.id === entryId ? { ...entry, content, updatedAt: now } : entry,
@@ -337,7 +333,6 @@ export const useAppStore = create<AppState>()(
           }
 
           const now = new Date().toISOString();
-          const noteTitle = state.notes.find((note) => note.id === entry.noteId)?.title || 'Untitled Note';
           const todos = state.todos.filter((todo) => todo.entryId === entryId);
           return {
             entries: state.entries.filter((item) => item.id !== entryId),
@@ -393,7 +388,6 @@ export const useAppStore = create<AppState>()(
           if (!todo) {
             return state;
           }
-          const now = new Date().toISOString();
           return {
             todos: state.todos.filter((item) => item.id !== todoId),
             deletedStack: [
@@ -412,7 +406,6 @@ export const useAppStore = create<AppState>()(
             return state;
           }
 
-          const now = new Date().toISOString();
           if (snapshot.type === 'note') {
             return {
               notes: [snapshot.note, ...state.notes.filter((note) => note.id !== snapshot.note.id)],
@@ -492,21 +485,19 @@ export function snapshotAppState(state: AppState): AppStateSnapshot {
 }
 
 function firstTitleFromContent(content: string) {
-  const firstLine = content
-    .split('\n')
-    .map((line) => line.trim())
-    .find((line) => line.length > 0 && !line.match(/^[-*]\s+\[( |x|X)\]/));
+  const firstLine = content.split('\n')[0]?.trim() ?? '';
+  const title = firstLine.replace(/^[^\p{L}\p{N}]+/u, '').trim();
 
-  if (!firstLine) {
+  if (!title) {
     return 'Untitled Note';
   }
 
-  return firstLine.replace(/^#+\s*/, '').slice(0, 80);
+  return title.slice(0, 80);
 }
 
-function buildNoteFromContent(state: AppState, content: string) {
+function buildNoteFromContent(state: AppState, content: string, explicitTitle?: string) {
   const now = new Date().toISOString();
-  const title = firstTitleFromContent(content);
+  const title = explicitTitle?.trim() || firstTitleFromContent(content);
   const note: Note = {
     id: createId('note'),
     title,
