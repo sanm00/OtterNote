@@ -113,3 +113,11 @@ export async function deleteImageAttachment(fileName: string): Promise<void> {
 export async function writeExportFile(filePath: string, content: string): Promise<void> {
   return invoke('write_export_file', { filePath, content });
 }
+
+export async function pinNoteWindow(noteId: string, title: string): Promise<void> {
+  return invoke('pin_note_window', { noteId, title });
+}
+
+export async function pinNewNoteWindow(): Promise<void> {
+  return invoke('pin_new_note_window');
+}

@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { EditorView } from '@codemirror/view';
+import { emit, listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import {
   Download,
@@ -16,7 +17,7 @@ import {
   Keyboard,
   NotebookText,
   Pencil,
-  Plus,
+  Pin,
   Moon,
   Upload,
   RotateCcw,
@@ -25,6 +26,7 @@ import {
   Settings,
   Trash2,
   SunMedium,
+  FilePenLine,
   X,
 } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
@@ -49,12 +51,29 @@ import {
   saveImageAttachmentBytes,
   readImageAttachmentBytes,
   readNoteBundle,
+  pinNewNoteWindow,
+  pinNoteWindow,
   setStoragePath,
   searchNotes,
   writeExportFile,
   type ImageAttachment,
   type StorageInfo,
 } from './storage';
+
+type ReactRefreshWindow = Window & {
+  __getReactRefreshIgnoredExports?: (context: { id: string }) => string[];
+};
+
+if ((import.meta as ImportMeta & { hot?: unknown }).hot && typeof window !== 'undefined') {
+  const refreshWindow = window as ReactRefreshWindow;
+  const previousIgnoredExports = refreshWindow.__getReactRefreshIgnoredExports;
+  refreshWindow.__getReactRefreshIgnoredExports = (context) => [
+    ...(previousIgnoredExports?.(context) ?? []),
+    'true',
+  ];
+}
+
+const PINNED_NOTE_AUTOSAVE_DELAY_MS = 5_000;
 
 const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'notes', label: 'Notes', icon: NotebookText },
@@ -66,18 +85,30 @@ const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType
 ];
 
 function App() {
+  const theme = useAppStore((state) => state.theme);
+  const isPinnedNewNote = getPinnedNewNote();
+  const pinnedNoteId = getPinnedNoteId();
+  useTheme(theme);
+  useAppStateChangeSync();
+
+  if (isPinnedNewNote) {
+    return <PinnedNewNoteWindow />;
+  }
+
+  if (pinnedNoteId) {
+    return <PinnedNoteWindow noteId={pinnedNoteId} />;
+  }
+
   const hasContent = useAppStore((state) => state.notes.length > 0 || state.todos.length > 0);
   const activeSection = useAppStore((state) => state.activeSection);
   const query = useAppStore((state) => state.query.trim());
   const searchFocused = useAppStore((state) => state.searchFocused);
-  const theme = useAppStore((state) => state.theme);
   const notes = useAppStore((state) => state.notes);
   const recentNoteIds = useAppStore((state) => state.recentNoteIds);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
   const selectNote = useAppStore((state) => state.selectNote);
   const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   useKeyboardShortcuts();
-  useTheme(theme);
   useOpenLatestNoteOnStartup(notes, recentNoteIds, setActiveSection, selectNote, clearSelectedNote);
   const showSearchResults =
     (searchFocused || Boolean(query)) &&
@@ -101,6 +132,22 @@ function App() {
       </main>
     </div>
   );
+}
+
+function getPinnedNoteId() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  return new URLSearchParams(window.location.search).get('pinnedNoteId') ?? '';
+}
+
+function getPinnedNewNote() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return new URLSearchParams(window.location.search).get('pinnedNew') === '1';
 }
 
 function useKeyboardShortcuts() {
@@ -256,7 +303,7 @@ function Sidebar() {
               title="New note"
               aria-label="New note"
             >
-              <Plus className="h-4 w-4" />
+              <FilePenLine className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -381,6 +428,19 @@ function NewEntryPage() {
     }
   }, [updateDraft]);
 
+  const pinNewNote = React.useCallback(async () => {
+    if (!isTauriRuntime()) {
+      window.alert('Pinning notes is available in the desktop app.');
+      return;
+    }
+
+    try {
+      await pinNewNoteWindow();
+    } catch (currentError) {
+      window.alert(errorMessage(currentError));
+    }
+  }, []);
+
   const saveDraft = React.useCallback(() => {
     const content = draft.trim();
     const title = titleDraft.trim();
@@ -428,6 +488,7 @@ function NewEntryPage() {
       <WorkspaceToolbar
         mode="edit"
         showEditButton={false}
+        onPin={pinNewNote}
         onInsertImage={insertImage}
         onSave={saveDraft}
         onDelete={undefined}
@@ -609,6 +670,21 @@ function NoteDetail({ noteId }: { noteId: string }) {
     downloadTextFile(markdown, fileName, 'text/markdown');
   }, [draftContent, draftEntryId, entries, isEditing, note]);
 
+  const pinCurrentNote = React.useCallback(async () => {
+    if (!note) return;
+
+    if (!isTauriRuntime()) {
+      window.alert('Pinning notes is available in the desktop app.');
+      return;
+    }
+
+    try {
+      await pinNoteWindow(note.id, displayTitle(note.title));
+    } catch (currentError) {
+      window.alert(errorMessage(currentError));
+    }
+  }, [note]);
+
   const startEditing = React.useCallback(() => {
     if (!note) return;
     const firstEntry = entries[0];
@@ -689,6 +765,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
         mode={isEditing ? 'edit' : 'preview'}
         showEditButton={true}
         onExport={exportCurrentNote}
+        onPin={pinCurrentNote}
         onInsertImage={isEditing ? insertImage : undefined}
         onSave={saveDraft}
         onEdit={startEditing}
@@ -731,10 +808,613 @@ function NoteDetail({ noteId }: { noteId: string }) {
   );
 }
 
+function PinnedNewNoteWindow() {
+  const createNote = useAppStore((state) => state.createNote);
+  const createNoteWithEntry = useAppStore((state) => state.createNoteWithEntry);
+  const updateNoteTitle = useAppStore((state) => state.updateNoteTitle);
+  const addEntry = useAppStore((state) => state.addEntry);
+  const storeHydrated = useStoreHydrated();
+  const [titleDraft, setTitleDraft] = React.useState('');
+  const [draft, setDraft] = React.useState('');
+  const [savedNoteId, setSavedNoteId] = React.useState<string | null>(null);
+  const [savedEntryId, setSavedEntryId] = React.useState<string | null>(null);
+  const [isEditing, setIsEditing] = React.useState(false);
+  const [status, setStatus] = React.useState('Ready');
+  const [showSavedToast, setShowSavedToast] = React.useState(false);
+  const editorViewRef = React.useRef<EditorView | null>(null);
+  const isInsertingImageRef = React.useRef(false);
+  const lastSavedRef = React.useRef({ title: '', content: '' });
+  const updateDraft = React.useCallback((value: React.SetStateAction<string>) => {
+    setDraft((current) => {
+      const next = typeof value === 'function' ? value(current) : value;
+      setTitleDraft(titleFromFirstLine(next));
+      return next;
+    });
+  }, []);
+
+  React.useEffect(() => {
+    document.body.classList.add('pinned-note-body');
+    return () => {
+      document.body.classList.remove('pinned-note-body');
+    };
+  }, []);
+
+  const saveDraftContent = React.useCallback(async (
+    nextDraft: string,
+    nextTitleDraft = titleFromFirstLine(nextDraft),
+    mode: 'auto' | 'manual' = 'manual',
+  ) => {
+    await waitForStoreHydration();
+    const content = nextDraft.trim();
+    const title = nextTitleDraft.trim();
+    if (!content && !title) {
+      return;
+    }
+
+    if (lastSavedRef.current.title === title && lastSavedRef.current.content === nextDraft) {
+      return;
+    }
+
+    setStatus('Saving...');
+
+    if (!savedNoteId) {
+      if (content) {
+        createNoteWithEntry(nextDraft, title);
+      } else {
+        createNote(title);
+      }
+
+      const state = useAppStore.getState();
+      const nextNoteId = state.selectedNoteId ?? state.notes[0]?.id ?? null;
+      const nextEntryId = nextNoteId ? state.entries.find((entry) => entry.noteId === nextNoteId)?.id ?? null : null;
+      setSavedNoteId(nextNoteId);
+      setSavedEntryId(nextEntryId);
+    } else {
+      updateNoteTitle(savedNoteId, title || 'Untitled Note');
+      if (savedEntryId) {
+        useAppStore.getState().updateEntry(savedEntryId, nextDraft);
+      } else if (content) {
+        addEntry(savedNoteId, nextDraft);
+        const nextEntryId = useAppStore.getState().entries.find((entry) => entry.noteId === savedNoteId)?.id ?? null;
+        setSavedEntryId(nextEntryId);
+      }
+    }
+
+    lastSavedRef.current = { title, content: nextDraft };
+    setStatus(mode === 'auto' ? 'Saved automatically' : 'Saved');
+    if (mode === 'auto') {
+      setShowSavedToast(true);
+    }
+    await notifyAppStateChanged();
+  }, [addEntry, createNote, createNoteWithEntry, savedEntryId, savedNoteId, updateNoteTitle]);
+
+  const saveDraft = React.useCallback((mode: 'auto' | 'manual' = 'manual') => {
+    return saveDraftContent(draft, titleDraft, mode);
+  }, [draft, saveDraftContent, titleDraft]);
+
+  React.useEffect(() => {
+    if (!storeHydrated) {
+      return;
+    }
+
+    const title = titleDraft.trim();
+    const content = draft.trim();
+    if (!title && !content) {
+      return;
+    }
+
+    if (lastSavedRef.current.title === title && lastSavedRef.current.content === draft) {
+      return;
+    }
+
+    setStatus('Unsaved changes');
+    const timeout = window.setTimeout(() => {
+      void saveDraft('auto');
+    }, PINNED_NOTE_AUTOSAVE_DELAY_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [draft, saveDraft, storeHydrated, titleDraft]);
+
+  React.useEffect(() => {
+    if (!showSavedToast) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setShowSavedToast(false);
+    }, 1600);
+
+    return () => window.clearTimeout(timeout);
+  }, [showSavedToast]);
+
+  const finishEditing = React.useCallback(() => {
+    if (isInsertingImageRef.current) {
+      return;
+    }
+
+    setIsEditing(false);
+    editorViewRef.current = null;
+    void saveDraft('auto');
+  }, [saveDraft]);
+
+  const insertPinnedImage = React.useCallback(async (payload: ClipboardImagePayload, view: EditorView | null) => {
+    isInsertingImageRef.current = true;
+    try {
+      setStatus('Pasting image...');
+      const image = await createMarkdownImageFromPayload(payload);
+      const nextDraft = insertMarkdownAtCursorAndGetContent(
+        view,
+        `![${image.altText}](${image.markdownUrl})`,
+        draft,
+      );
+      updateDraft(nextDraft);
+      setIsEditing(true);
+      await saveDraftContent(nextDraft, titleFromFirstLine(nextDraft), 'auto');
+    } finally {
+      isInsertingImageRef.current = false;
+    }
+  }, [draft, saveDraftContent, updateDraft]);
+
+  const handlePaste = React.useCallback((event: React.ClipboardEvent) => {
+    const image = extractClipboardImagePayload(event.nativeEvent);
+    if (!image) {
+      setStatus('Paste ignored: no image found');
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    setIsEditing(true);
+    void insertPinnedImage(image, editorViewRef.current).catch((error) => {
+      setStatus(`Paste failed: ${errorMessage(error)}`);
+      window.alert(errorMessage(error));
+    });
+  }, [insertPinnedImage]);
+
+  React.useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const image = extractClipboardImagePayload(event);
+      if (!image) {
+        setStatus('Paste ignored: no image found');
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      setIsEditing(true);
+      void insertPinnedImage(image, editorViewRef.current).catch((error) => {
+        setStatus(`Paste failed: ${errorMessage(error)}`);
+        window.alert(errorMessage(error));
+      });
+    };
+
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [insertPinnedImage]);
+
+  const startEditing = React.useCallback(async () => {
+    if (savedNoteId) {
+      try {
+        const content = await readNoteBundle(savedNoteId);
+        if (content) {
+          const nextBundle = JSON.parse(content) as NoteBundleData;
+          const firstEntry = nextBundle.entries[0];
+          const nextTitle = displayTitle(nextBundle.note.title);
+          const nextContent = firstEntry?.content ?? '';
+          setTitleDraft(nextTitle);
+          setDraft(nextContent);
+          setSavedEntryId(firstEntry?.id ?? null);
+          lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+        }
+      } catch {
+        const state = useAppStore.getState();
+        const nextNote = state.notes.find((item) => item.id === savedNoteId);
+        const firstEntry = state.entries.find((entry) => entry.noteId === savedNoteId);
+        if (nextNote) {
+          const nextTitle = displayTitle(nextNote.title);
+          const nextContent = firstEntry?.content ?? draft;
+          setTitleDraft(nextTitle);
+          setDraft(nextContent);
+          setSavedEntryId(firstEntry?.id ?? null);
+          lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+        }
+      }
+    }
+
+    setIsEditing(true);
+  }, [draft, savedNoteId]);
+
+  React.useEffect(() => {
+    if (!isEditing) {
+      return;
+    }
+
+    window.addEventListener('blur', finishEditing);
+    return () => window.removeEventListener('blur', finishEditing);
+  }, [finishEditing, isEditing]);
+
+  return (
+    <div className="pinned-note-window flex h-screen flex-col text-slate-950">
+      <main
+        className="pinned-note-content min-h-0 flex-1 overflow-y-auto p-4"
+        onMouseLeave={isEditing ? finishEditing : undefined}
+        onPaste={handlePaste}
+      >
+        {isEditing ? (
+        <div className="pinned-editor-shell min-h-full">
+          <CodeMirror
+            value={draft}
+            height="100%"
+            extensions={[markdown(), imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view))]}
+            basicSetup={{ lineNumbers: false, foldGutter: false }}
+            onChange={updateDraft}
+            onCreateEditor={(view) => {
+              editorViewRef.current = view;
+              view.dom.addEventListener('focusout', () => {
+                window.setTimeout(() => {
+                  if (!view.dom.contains(document.activeElement)) {
+                    finishEditing();
+                  }
+                }, 0);
+              });
+              view.focus();
+            }}
+            placeholder={'Start writing...\n\n- [ ] Add a ToDo'}
+          />
+        </div>
+        ) : (
+          <PinnedNotePreview
+            content={draft}
+            emptyMessage="双击开始记录"
+            onDoubleClick={() => void startEditing()}
+          />
+        )}
+      </main>
+      <PinnedSaveToast visible={showSavedToast} />
+    </div>
+  );
+}
+
+function PinnedNoteWindow({ noteId }: { noteId: string }) {
+  const note = useAppStore((state) => state.notes.find((item) => item.id === noteId));
+  const allEntries = useAppStore((state) => state.entries);
+  const updateNoteTitle = useAppStore((state) => state.updateNoteTitle);
+  const addEntry = useAppStore((state) => state.addEntry);
+  const storeHydrated = useStoreHydrated();
+  const [bundle, setBundle] = React.useState<NoteBundleData | null>(null);
+  const [loadFailed, setLoadFailed] = React.useState(false);
+  const [isEditing, setIsEditing] = React.useState(false);
+  const [draftTitle, setDraftTitle] = React.useState('');
+  const [draftEntryId, setDraftEntryId] = React.useState<string | null>(null);
+  const [draftContent, setDraftContent] = React.useState('');
+  const [status, setStatus] = React.useState('Ready');
+  const [showSavedToast, setShowSavedToast] = React.useState(false);
+  const editorViewRef = React.useRef<EditorView | null>(null);
+  const isInsertingImageRef = React.useRef(false);
+  const initializedRef = React.useRef(false);
+  const lastSavedRef = React.useRef({ title: '', content: '' });
+  const entries = React.useMemo(() => {
+    if (bundle) {
+      return bundle.entries;
+    }
+
+    return allEntries.filter((entry) => entry.noteId === noteId);
+  }, [allEntries, bundle, noteId]);
+  const title = bundle?.note.title ?? note?.title ?? 'Pinned Note';
+
+  React.useEffect(() => {
+    document.body.classList.add('pinned-note-body');
+    return () => {
+      document.body.classList.remove('pinned-note-body');
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const content = await readNoteBundle(noteId);
+        if (!cancelled && content) {
+          setBundle(JSON.parse(content) as NoteBundleData);
+          setLoadFailed(false);
+          return;
+        }
+      } catch {
+        // Fall back to hydrated store state below.
+      }
+
+      if (!cancelled) {
+        setBundle(null);
+        const hasStoreNote = useAppStore.getState().notes.some((item) => item.id === noteId);
+        setLoadFailed(!hasStoreNote);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [noteId]);
+
+  React.useEffect(() => {
+    if (initializedRef.current) {
+      return;
+    }
+
+    if (!note && !bundle && !loadFailed) {
+      return;
+    }
+
+    const firstEntry = entries[0];
+    const nextTitle = displayTitle(title);
+    const nextContent = firstEntry?.content ?? '';
+    setDraftTitle(nextTitle);
+    setDraftEntryId(firstEntry?.id ?? null);
+    setDraftContent(nextContent);
+    lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+    initializedRef.current = true;
+  }, [bundle, entries, loadFailed, note, title]);
+
+  const saveDraftContent = React.useCallback(async (
+    nextDraftContent: string,
+    nextDraftTitle = draftTitle,
+    mode: 'auto' | 'manual' = 'manual',
+  ) => {
+    await waitForStoreHydration();
+    const nextTitle = nextDraftTitle.trim();
+    const nextContent = nextDraftContent.trim();
+    if (!note && !bundle) {
+      return;
+    }
+
+    if (lastSavedRef.current.title === nextTitle && lastSavedRef.current.content === nextDraftContent) {
+      return;
+    }
+
+    setStatus('Saving...');
+    updateNoteTitle(noteId, nextTitle || 'Untitled Note');
+    if (draftEntryId) {
+      useAppStore.getState().updateEntry(draftEntryId, nextDraftContent);
+    } else if (nextContent) {
+      addEntry(noteId, nextDraftContent);
+      const nextEntryId = useAppStore.getState().entries.find((entry) => entry.noteId === noteId)?.id ?? null;
+      setDraftEntryId(nextEntryId);
+    }
+
+    setBundle(null);
+    lastSavedRef.current = { title: nextTitle, content: nextDraftContent };
+    setStatus(mode === 'auto' ? 'Saved automatically' : 'Saved');
+    if (mode === 'auto') {
+      setShowSavedToast(true);
+    }
+    await notifyAppStateChanged();
+  }, [addEntry, bundle, draftEntryId, draftTitle, note, noteId, updateNoteTitle]);
+
+  const saveDraft = React.useCallback((mode: 'auto' | 'manual' = 'manual') => {
+    return saveDraftContent(draftContent, draftTitle, mode);
+  }, [draftContent, draftTitle, saveDraftContent]);
+
+  React.useEffect(() => {
+    if (!storeHydrated || !initializedRef.current || (!note && !bundle)) {
+      return;
+    }
+
+    const title = draftTitle.trim();
+    if (lastSavedRef.current.title === title && lastSavedRef.current.content === draftContent) {
+      return;
+    }
+
+    setStatus('Unsaved changes');
+    const timeout = window.setTimeout(() => {
+      void saveDraft('auto');
+    }, PINNED_NOTE_AUTOSAVE_DELAY_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [bundle, draftContent, draftTitle, note, saveDraft, storeHydrated]);
+
+  React.useEffect(() => {
+    if (!showSavedToast) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setShowSavedToast(false);
+    }, 1600);
+
+    return () => window.clearTimeout(timeout);
+  }, [showSavedToast]);
+
+  const finishEditing = React.useCallback(() => {
+    if (isInsertingImageRef.current) {
+      return;
+    }
+
+    setIsEditing(false);
+    editorViewRef.current = null;
+    void saveDraft('auto');
+  }, [saveDraft]);
+
+  const insertPinnedImage = React.useCallback(async (payload: ClipboardImagePayload, view: EditorView | null) => {
+    isInsertingImageRef.current = true;
+    try {
+      setStatus('Pasting image...');
+      const image = await createMarkdownImageFromPayload(payload);
+      const nextDraftContent = insertMarkdownAtCursorAndGetContent(
+        view,
+        `![${image.altText}](${image.markdownUrl})`,
+        draftContent,
+      );
+      setDraftContent(nextDraftContent);
+      setIsEditing(true);
+      await saveDraftContent(nextDraftContent, draftTitle, 'auto');
+    } finally {
+      isInsertingImageRef.current = false;
+    }
+  }, [draftContent, draftTitle, saveDraftContent]);
+
+  const handlePaste = React.useCallback((event: React.ClipboardEvent) => {
+    const image = extractClipboardImagePayload(event.nativeEvent);
+    if (!image) {
+      setStatus('Paste ignored: no image found');
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    setIsEditing(true);
+    void insertPinnedImage(image, editorViewRef.current).catch((error) => {
+      setStatus(`Paste failed: ${errorMessage(error)}`);
+      window.alert(errorMessage(error));
+    });
+  }, [insertPinnedImage]);
+
+  React.useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const image = extractClipboardImagePayload(event);
+      if (!image) {
+        setStatus('Paste ignored: no image found');
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      setIsEditing(true);
+      void insertPinnedImage(image, editorViewRef.current).catch((error) => {
+        setStatus(`Paste failed: ${errorMessage(error)}`);
+        window.alert(errorMessage(error));
+      });
+    };
+
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [insertPinnedImage]);
+
+  const startEditing = React.useCallback(async () => {
+    try {
+      const content = await readNoteBundle(noteId);
+      if (content) {
+        const nextBundle = JSON.parse(content) as NoteBundleData;
+        const firstEntry = nextBundle.entries[0];
+        const nextTitle = displayTitle(nextBundle.note.title);
+        const nextContent = firstEntry?.content ?? '';
+        setBundle(nextBundle);
+        setDraftTitle(nextTitle);
+        setDraftEntryId(firstEntry?.id ?? null);
+        setDraftContent(nextContent);
+        lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+        setLoadFailed(false);
+        setIsEditing(true);
+        return;
+      }
+    } catch {
+      // Fall back to hydrated store state below.
+    }
+
+    const state = useAppStore.getState();
+    const nextNote = state.notes.find((item) => item.id === noteId);
+    if (!nextNote) {
+      setLoadFailed(true);
+      return;
+    }
+
+    const firstEntry = state.entries.find((entry) => entry.noteId === noteId);
+    const nextTitle = displayTitle(nextNote.title);
+    const nextContent = firstEntry?.content ?? '';
+    setBundle(null);
+    setDraftTitle(nextTitle);
+    setDraftEntryId(firstEntry?.id ?? null);
+    setDraftContent(nextContent);
+    lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+    setLoadFailed(false);
+    setIsEditing(true);
+  }, [noteId]);
+
+  React.useEffect(() => {
+    if (!isEditing) {
+      return;
+    }
+
+    window.addEventListener('blur', finishEditing);
+    return () => window.removeEventListener('blur', finishEditing);
+  }, [finishEditing, isEditing]);
+
+  return (
+    <div className="pinned-note-window flex h-screen flex-col text-slate-950">
+      <main
+        className="pinned-note-content min-h-0 flex-1 overflow-y-auto p-4"
+        onMouseLeave={isEditing ? finishEditing : undefined}
+        onPaste={handlePaste}
+      >
+        {loadFailed ? (
+          <div className="text-sm italic text-emerald-950">This pinned note is unavailable.</div>
+        ) : !isEditing ? (
+          <PinnedNotePreview
+            content={draftContent}
+            emptyMessage="双击编辑内容"
+            onDoubleClick={() => void startEditing()}
+          />
+        ) : (
+          <div className="pinned-editor-shell min-h-full">
+            <CodeMirror
+              value={draftContent}
+              height="100%"
+              extensions={[markdown(), imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view))]}
+              basicSetup={{ lineNumbers: false, foldGutter: false }}
+              onChange={setDraftContent}
+              onCreateEditor={(view) => {
+                editorViewRef.current = view;
+                view.dom.addEventListener('focusout', () => {
+                  window.setTimeout(() => {
+                    if (!view.dom.contains(document.activeElement)) {
+                      finishEditing();
+                    }
+                  }, 0);
+                });
+                view.focus();
+              }}
+              placeholder={'Add note content...\n\n- [ ] Add a ToDo'}
+            />
+          </div>
+        )}
+      </main>
+      <PinnedSaveToast visible={showSavedToast} />
+    </div>
+  );
+}
+
+function PinnedNotePreview({
+  content,
+  emptyMessage,
+  onDoubleClick,
+}: {
+  content: string;
+  emptyMessage: string;
+  onDoubleClick: () => void;
+}) {
+  return (
+    <div className="pinned-note-preview min-h-full" onDoubleClick={onDoubleClick}>
+      {content.trim() ? (
+        <MarkdownContent content={content} />
+      ) : (
+        <div className="pinned-note-empty">{emptyMessage}</div>
+      )}
+    </div>
+  );
+}
+
+function PinnedSaveToast({ visible }: { visible: boolean }) {
+  return (
+    <div className={`pinned-save-toast ${visible ? 'pinned-save-toast-visible' : ''}`} aria-live="polite">
+      保存成功
+    </div>
+  );
+}
+
 function WorkspaceToolbar({
   mode,
   showEditButton = true,
   onExport,
+  onPin,
   onInsertImage,
   onSave,
   onEdit,
@@ -744,6 +1424,7 @@ function WorkspaceToolbar({
   mode: 'preview' | 'edit';
   showEditButton?: boolean;
   onExport?: () => void;
+  onPin?: () => void;
   onInsertImage?: () => void;
   onSave: () => void;
   onEdit?: () => void;
@@ -757,6 +1438,12 @@ function WorkspaceToolbar({
           <button type="button" className="secondary-button" onClick={onExport}>
             <Download className="h-4 w-4" />
             Export
+          </button>
+        ) : null}
+        {onPin ? (
+          <button type="button" className="secondary-button" onClick={onPin}>
+            <Pin className="h-4 w-4" />
+            Pin
           </button>
         ) : null}
         {mode === 'edit' && onInsertImage ? (
@@ -792,6 +1479,79 @@ function useTheme(theme: ThemeMode) {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
   }, [theme]);
+}
+
+const appStateChangedEvent = 'otter:app-state-changed';
+
+function useAppStateChangeSync() {
+  React.useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+
+    void listen(appStateChangedEvent, () => {
+      if (!disposed) {
+        void useAppStore.persist.rehydrate?.();
+      }
+    }).then((unlisten) => {
+      if (disposed) {
+        void unlisten();
+        return;
+      }
+
+      cleanup = unlisten;
+    });
+
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }, []);
+}
+
+function useStoreHydrated() {
+  const [hydrated, setHydrated] = React.useState(() => useAppStore.persist.hasHydrated?.() ?? false);
+
+  React.useEffect(() => {
+    if (hydrated) {
+      return;
+    }
+
+    const unsubscribe = useAppStore.persist.onFinishHydration?.(() => {
+      setHydrated(true);
+    });
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, [hydrated]);
+
+  return hydrated;
+}
+
+function waitForStoreHydration() {
+  if (useAppStore.persist.hasHydrated?.() ?? false) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve) => {
+    const unsubscribe = useAppStore.persist.onFinishHydration?.(() => {
+      unsubscribe?.();
+      resolve();
+    });
+  });
+}
+
+async function notifyAppStateChanged() {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  await new Promise((resolve) => window.setTimeout(resolve, 80));
+  await emit(appStateChangedEvent);
 }
 
 function useOpenLatestNoteOnStartup(
@@ -847,6 +1607,10 @@ type MarkdownImage = {
   altText: string;
   markdownUrl: string;
 };
+
+type ClipboardImagePayload =
+  | { type: 'file'; file: File }
+  | { type: 'path'; path: string };
 
 type NoteBundleData = {
   schemaVersion?: number;
@@ -913,18 +1677,54 @@ async function storeSelectedImage(selectedPath: string): Promise<MarkdownImage |
 }
 
 async function createMarkdownImageFromFile(file: File): Promise<MarkdownImage> {
+  const sourceFileName = file.name || `pasted-image.${imageExtensionFromMimeType(file.type)}`;
   if (isTauriRuntime()) {
     const attachmentBaseName = createId('img');
     const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-    const previewFileName = await saveImageAttachmentBytes(bytes, file.name, attachmentBaseName);
+    const previewFileName = await saveImageAttachmentBytes(bytes, sourceFileName, attachmentBaseName);
     window.dispatchEvent(new CustomEvent('otter:attachments-changed'));
     return {
-      altText: extractAltText(file.name),
+      altText: extractAltText(sourceFileName),
       markdownUrl: `attachment://${previewFileName}`,
     };
   }
 
-  return { altText: extractAltText(file.name), markdownUrl: await readFileAsOptimizedDataUrl(file) };
+  return { altText: extractAltText(sourceFileName), markdownUrl: await readFileAsOptimizedDataUrl(file) };
+}
+
+async function createMarkdownImageFromPayload(payload: ClipboardImagePayload): Promise<MarkdownImage> {
+  if (payload.type === 'file') {
+    const image = await createMarkdownImageFromFile(payload.file);
+    return image;
+  }
+
+  if (!isTauriRuntime()) {
+    throw new Error('Pasting image files by path is available in the desktop app.');
+  }
+
+  const stored = await storeSelectedImage(payload.path);
+  if (!stored) {
+    throw new Error('Failed to store pasted image.');
+  }
+
+  return stored;
+}
+
+function imageExtensionFromMimeType(mimeType: string) {
+  switch (mimeType) {
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    case 'image/bmp':
+      return 'bmp';
+    case 'image/svg+xml':
+      return 'svg';
+    default:
+      return 'png';
+  }
 }
 
 function mimeTypeFromFileName(fileName: string) {
@@ -1095,7 +1895,7 @@ function insertMarkdownAtCursor(
   text: string,
   fallbackUpdate: React.Dispatch<React.SetStateAction<string>>,
 ) {
-  if (!view) {
+  if (!view || !view.dom.isConnected) {
     fallbackUpdate((current) => `${current}${current.endsWith('\n') || current.length === 0 ? '' : '\n'}${text}`);
     return;
   }
@@ -1107,6 +1907,21 @@ function insertMarkdownAtCursor(
     scrollIntoView: true,
   });
   view.focus();
+}
+
+function insertMarkdownAtCursorAndGetContent(view: EditorView | null, text: string, fallbackContent: string) {
+  if (!view || !view.dom.isConnected) {
+    return `${fallbackContent}${fallbackContent.endsWith('\n') || fallbackContent.length === 0 ? '' : '\n'}${text}`;
+  }
+
+  const selection = view.state.selection.main;
+  view.dispatch({
+    changes: { from: selection.from, to: selection.to, insert: text },
+    selection: { anchor: selection.from + text.length },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return view.state.doc.toString();
 }
 
 function imagePasteExtension(onImage: (file: File, view: EditorView) => Promise<void>) {
@@ -1129,18 +1944,83 @@ function imagePasteExtension(onImage: (file: File, view: EditorView) => Promise<
 }
 
 function extractClipboardImage(event: ClipboardEvent) {
-  const items = event.clipboardData?.items;
-  if (!items) return null;
+  const payload = extractClipboardImagePayload(event);
+  return payload?.type === 'file' ? payload.file : null;
+}
 
-  for (const item of Array.from(items)) {
+function extractClipboardImagePayload(event: ClipboardEvent): ClipboardImagePayload | null {
+  const data = event.clipboardData;
+  if (!data) {
+    return null;
+  }
+
+  const files = Array.from(data.files);
+  for (const file of files) {
+    if (isClipboardImageFile(file, file.type)) {
+      return { type: 'file', file };
+    }
+  }
+
+  for (const item of Array.from(data.items)) {
     if (item.kind !== 'file') continue;
     const file = item.getAsFile();
-    if (file && file.type.startsWith('image/')) {
-      return file;
+    if (file && isClipboardImageFile(file, item.type)) {
+      return { type: 'file', file };
+    }
+  }
+
+  const path = extractClipboardImagePath(data);
+  if (path) {
+    return { type: 'path', path };
+  }
+
+  return null;
+}
+
+function isClipboardImageFile(file: File, itemType: string) {
+  if (file.type.startsWith('image/') || itemType.startsWith('image/')) {
+    return true;
+  }
+
+  return isImageFileName(file.name);
+}
+
+function isImageFileName(fileName: string) {
+  return ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(extractFileExtension(fileName));
+}
+
+function extractClipboardImagePath(data: DataTransfer) {
+  const candidates = [
+    ...data.getData('text/uri-list').split(/\r?\n/),
+    data.getData('text/plain'),
+  ];
+
+  for (const candidate of candidates) {
+    const path = normalizeClipboardImagePath(candidate);
+    if (path && isImageFileName(path)) {
+      return path;
     }
   }
 
   return null;
+}
+
+function normalizeClipboardImagePath(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('#')) {
+    return '';
+  }
+
+  if (trimmed.startsWith('file://')) {
+    try {
+      const url = new URL(trimmed);
+      return decodeURIComponent(url.pathname);
+    } catch {
+      return decodeURIComponent(trimmed.replace(/^file:\/\//, ''));
+    }
+  }
+
+  return trimmed;
 }
 
 async function insertImageFile(
@@ -1234,7 +2114,9 @@ function EntryCard({ entryId }: { entryId: string }) {
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           {entry.content.trim() ? (
-            <MarkdownContent content={entry.content} />
+            <div className="note-detail-content">
+              <MarkdownContent content={entry.content} />
+            </div>
           ) : (
             <div className="text-sm italic text-slate-400">No note text. This entry contains only ToDo items.</div>
           )}
@@ -1967,61 +2849,61 @@ function useAttachmentObjectUrl(fileName?: string, fallbackFileName?: string) {
     let cancelled = false;
     let objectUrl = '';
 
+    const loadAttachment = async (targetFileName: string) => {
+      const bytes = await readImageAttachmentBytes(targetFileName);
+      if (cancelled) {
+        return true;
+      }
+
+      objectUrl = URL.createObjectURL(
+        new Blob([new Uint8Array(bytes)], { type: mimeTypeFromFileName(targetFileName) }),
+      );
+      setSrc(objectUrl);
+      return true;
+    };
+
+    const loadFallbacks = async (candidates: string[]) => {
+      for (const candidate of candidates) {
+        try {
+          if (await loadAttachment(candidate)) {
+            return true;
+          }
+        } catch {
+          // Try next candidate.
+        }
+      }
+
+      return false;
+    };
+
     const load = async () => {
       if (!fileName || !isTauriRuntime()) {
-        if (fallbackFileName && fallbackFileName !== fileName) {
-          try {
-            const bytes = await readImageAttachmentBytes(fallbackFileName);
-            if (cancelled) {
-              return;
-            }
-
-            objectUrl = URL.createObjectURL(
-              new Blob([new Uint8Array(bytes)], { type: mimeTypeFromFileName(fallbackFileName) }),
-            );
-            setSrc(objectUrl);
+        const fallbackCandidates = attachmentFallbackCandidates(fileName, fallbackFileName);
+        if (fallbackCandidates.length > 0) {
+          if (await loadFallbacks(fallbackCandidates)) {
             return;
-          } catch {
-            if (!cancelled) {
-              setSrc('');
-            }
           }
-        } else {
+        }
+
+        if (!cancelled) {
           setSrc('');
         }
         return;
       }
 
       try {
-        const bytes = await readImageAttachmentBytes(fileName);
-        if (cancelled) {
+        if (await loadAttachment(fileName)) {
           return;
         }
-
-        objectUrl = URL.createObjectURL(
-          new Blob([new Uint8Array(bytes)], { type: mimeTypeFromFileName(fileName) }),
-        );
-        setSrc(objectUrl);
       } catch {
-        if (fallbackFileName && fallbackFileName !== fileName) {
-          try {
-            const bytes = await readImageAttachmentBytes(fallbackFileName);
-            if (cancelled) {
-              return;
-            }
+      }
 
-            objectUrl = URL.createObjectURL(
-              new Blob([new Uint8Array(bytes)], { type: mimeTypeFromFileName(fallbackFileName) }),
-            );
-            setSrc(objectUrl);
-          } catch {
-            if (!cancelled) {
-              setSrc('');
-            }
-          }
-        } else if (!cancelled) {
-          setSrc('');
-        }
+      if (await loadFallbacks(attachmentFallbackCandidates(fileName, fallbackFileName))) {
+        return;
+      }
+
+      if (!cancelled) {
+        setSrc('');
       }
     };
 
@@ -2061,6 +2943,28 @@ function MarkdownImageElement({
   }
 
   return <img alt={alt ?? ''} src={attachmentSrc} loading="lazy" />;
+}
+
+function attachmentFallbackCandidates(fileName?: string, fallbackFileName?: string) {
+  const candidates: string[] = [];
+
+  if (fallbackFileName && fallbackFileName !== fileName) {
+    candidates.push(fallbackFileName);
+  }
+
+  if (fileName) {
+    const previewIndex = fileName.indexOf('.preview.');
+    if (previewIndex > 0) {
+      const base = fileName.slice(0, previewIndex);
+      const currentExt = extractFileExtension(fileName);
+      const extensions = [currentExt, 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].filter(Boolean);
+      for (const ext of extensions) {
+        candidates.push(`${base}.original.${ext}`);
+      }
+    }
+  }
+
+  return Array.from(new Set(candidates));
 }
 
 function EmptyMessage({ title, message }: { title: string; message: string }) {

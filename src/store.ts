@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { createId } from './id';
 import { appStorage } from './storage';
-import { parseTodosFromEntry } from './todo-parser';
+import { parseTodosFromEntry, removeTodoFromEntryContent, updateTodoStatusInEntryContent } from './todo-parser';
 
 export type NavSection = 'new' | 'notes' | 'todos' | 'timeline' | 'images' | 'settings' | 'help';
 export type TodoStatus = 'todo' | 'done';
@@ -369,12 +369,52 @@ export const useAppStore = create<AppState>()(
       toggleTodo: (todoId, done) =>
         set((state) => {
           const now = new Date().toISOString();
+          const todo = state.todos.find((item) => item.id === todoId);
+          if (!todo) {
+            return state;
+          }
+
+          const nextStatus = done ? 'done' : 'todo';
+          if (todo.entryId) {
+            const entry = state.entries.find((item) => item.id === todo.entryId);
+            if (!entry) {
+              return state;
+            }
+
+            const occurrenceIndex = state.todos
+              .filter((item) => item.entryId === todo.entryId)
+              .findIndex((item) => item.id === todoId);
+            const nextContent =
+              occurrenceIndex >= 0
+                ? updateTodoStatusInEntryContent(entry.content, occurrenceIndex, nextStatus)
+                : entry.content;
+
+            return {
+              entries: state.entries.map((item) =>
+                item.id === entry.id ? { ...item, content: nextContent, updatedAt: now } : item,
+              ),
+              todos: state.todos.map((item) =>
+                item.id === todoId
+                  ? {
+                      ...item,
+                      status: nextStatus,
+                      completedAt: done ? now : undefined,
+                      updatedAt: now,
+                    }
+                  : item,
+              ),
+              notes: state.notes.map((note) =>
+                note.id === entry.noteId ? { ...note, updatedAt: now } : note,
+              ),
+            };
+          }
+
           return {
             todos: state.todos.map((item) =>
               item.id === todoId
                 ? {
                     ...item,
-                    status: done ? 'done' : 'todo',
+                    status: nextStatus,
                     completedAt: done ? now : undefined,
                     updatedAt: now,
                   }
@@ -388,6 +428,40 @@ export const useAppStore = create<AppState>()(
           if (!todo) {
             return state;
           }
+
+          const now = new Date().toISOString();
+          if (todo.entryId) {
+            const entry = state.entries.find((item) => item.id === todo.entryId);
+            if (!entry) {
+              return state;
+            }
+
+            const occurrenceIndex = state.todos
+              .filter((item) => item.entryId === todo.entryId)
+              .findIndex((item) => item.id === todoId);
+            const nextContent =
+              occurrenceIndex >= 0
+                ? removeTodoFromEntryContent(entry.content, occurrenceIndex)
+                : entry.content;
+
+            return {
+              entries: state.entries.map((item) =>
+                item.id === entry.id ? { ...item, content: nextContent, updatedAt: now } : item,
+              ),
+              todos: state.todos.filter((item) => item.id !== todoId),
+              notes: state.notes.map((note) =>
+                note.id === entry.noteId ? { ...note, updatedAt: now } : note,
+              ),
+              deletedStack: [
+                {
+                  type: 'todo',
+                  todo,
+                } as const,
+                ...state.deletedStack,
+              ].slice(0, 20),
+            };
+          }
+
           return {
             todos: state.todos.filter((item) => item.id !== todoId),
             deletedStack: [

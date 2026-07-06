@@ -1,13 +1,16 @@
+use image::{imageops::FilterType, ImageFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::{
-  fs,
-  io::Cursor,
-  path::{Path, PathBuf},
+    fs,
+    io::Cursor,
+    path::{Path, PathBuf},
+    sync::{atomic::{AtomicU64, Ordering}, Mutex, OnceLock},
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager};
-use image::{imageops::FilterType, ImageFormat};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const STATE_FILE_NAME: &str = "state.json";
 const DELETED_STACK_FILE_NAME: &str = "deleted-stack.json";
@@ -15,6 +18,14 @@ const SEARCH_INDEX_FILE_NAME: &str = "search-index.json";
 const NOTES_DIR_NAME: &str = "notes";
 const IMAGES_DIR_NAME: &str = "images";
 const LEGACY_IMAGES_DIR_NAME: &str = "otternote-assets";
+const ATTACHMENT_CLEANUP_DELAY_MS: u64 = 1_500;
+
+struct AttachmentCleanupScheduler {
+    generation: AtomicU64,
+    latest_state: Mutex<Option<String>>,
+}
+
+static ATTACHMENT_CLEANUP_SCHEDULER: OnceLock<AttachmentCleanupScheduler> = OnceLock::new();
 
 #[derive(Default, Deserialize, Serialize)]
 struct StorageConfig {
@@ -82,6 +93,26 @@ fn default_schema_version() -> u32 {
     1
 }
 
+fn sanitize_window_label(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn current_millis_label() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -99,7 +130,9 @@ pub fn run() {
             delete_image_attachment,
             write_export_file,
             validate_storage_path,
-            set_storage_path
+            set_storage_path,
+            pin_note_window,
+            pin_new_note_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running OtterNote");
@@ -108,6 +141,49 @@ pub fn run() {
 #[tauri::command]
 fn get_storage_info(app: AppHandle) -> Result<StorageInfo, String> {
     storage_info(&app)
+}
+
+#[tauri::command]
+fn pin_note_window(app: AppHandle, note_id: String, title: String) -> Result<(), String> {
+    let label = format!("pinned-{}", sanitize_window_label(&note_id));
+    if let Some(window) = app.get_webview_window(&label) {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        window
+            .set_always_on_top(true)
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let url = WebviewUrl::App(format!("index.html?pinnedNoteId={note_id}").into());
+    WebviewWindowBuilder::new(&app, label, url)
+        .title(format!("Pinned - {title}"))
+        .inner_size(360.0, 420.0)
+        .min_inner_size(260.0, 220.0)
+        .resizable(true)
+        .always_on_top(true)
+        .focused(true)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn pin_new_note_window(app: AppHandle) -> Result<(), String> {
+    let label = format!("pinned-new-{}", current_millis_label());
+    let url = WebviewUrl::App("index.html?pinnedNew=1".into());
+    WebviewWindowBuilder::new(&app, label, url)
+        .title("Pinned - New Note")
+        .inner_size(360.0, 420.0)
+        .min_inner_size(260.0, 220.0)
+        .resizable(true)
+        .always_on_top(true)
+        .focused(true)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -120,7 +196,9 @@ fn read_app_state(app: AppHandle) -> Result<Option<String>, String> {
     let legacy_path = legacy_state_file_path(&app)?;
     if let Some(path) = legacy_path {
         if path.exists() {
-            return fs::read_to_string(path).map(Some).map_err(|error| error.to_string());
+            return fs::read_to_string(path)
+                .map(Some)
+                .map_err(|error| error.to_string());
         }
     }
 
@@ -140,7 +218,9 @@ fn write_app_state(app: AppHandle, value: String) -> Result<(), String> {
     write_note_bundles(&storage_root, &note_bundles)?;
     write_search_index(&storage_root, &note_bundles)?;
     write_deleted_stack(&storage_root, &deleted_stack)?;
-    cleanup_orphan_attachments(&app, &value)
+    let stable_state = read_full_app_state(&app, &state_path)?;
+    schedule_orphan_attachment_cleanup(app, stable_state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -150,7 +230,9 @@ fn read_note_bundle(app: AppHandle, note_id: String) -> Result<Option<String>, S
         return Ok(None);
     }
 
-    fs::read_to_string(bundle_path).map(Some).map_err(|error| error.to_string())
+    fs::read_to_string(bundle_path)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -161,7 +243,8 @@ fn search_notes(app: AppHandle, query: String) -> Result<Vec<Value>, String> {
     }
 
     let content = fs::read_to_string(index_path).map_err(|error| error.to_string())?;
-    let records = serde_json::from_str::<Vec<SearchIndexRecord>>(&content).map_err(|error| error.to_string())?;
+    let records = serde_json::from_str::<Vec<SearchIndexRecord>>(&content)
+        .map_err(|error| error.to_string())?;
     let normalized = query.trim().to_lowercase();
 
     let mut results: Vec<Value> = records
@@ -182,8 +265,14 @@ fn search_notes(app: AppHandle, query: String) -> Result<Vec<Value>, String> {
         .collect();
 
     results.sort_by(|a, b| {
-        let left = a.get("updatedAt").and_then(Value::as_str).unwrap_or_default();
-        let right = b.get("updatedAt").and_then(Value::as_str).unwrap_or_default();
+        let left = a
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let right = b
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         right.cmp(left)
     });
 
@@ -237,7 +326,10 @@ fn set_storage_path(app: AppHandle, storage_path: String) -> Result<StorageInfo,
 
     let old_search_index = search_index_path(&old_storage_root);
     let new_search_index = search_index_path(&new_storage_root);
-    if old_search_index.exists() && old_search_index != new_search_index && !new_search_index.exists() {
+    if old_search_index.exists()
+        && old_search_index != new_search_index
+        && !new_search_index.exists()
+    {
         if let Some(parent) = new_search_index.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
@@ -245,7 +337,10 @@ fn set_storage_path(app: AppHandle, storage_path: String) -> Result<StorageInfo,
     }
 
     let new_deleted_stack = deleted_stack_file_path(&new_storage_root);
-    if old_deleted_stack.exists() && old_deleted_stack != new_deleted_stack && !new_deleted_stack.exists() {
+    if old_deleted_stack.exists()
+        && old_deleted_stack != new_deleted_stack
+        && !new_deleted_stack.exists()
+    {
         if let Some(parent) = new_deleted_stack.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
@@ -274,7 +369,12 @@ fn save_image_attachment(
     let storage_root = active_storage_root(&app)?;
     ensure_legacy_image_migration(&storage_root)?;
     let bytes = fs::read(&source).map_err(|error| error.to_string())?;
-    store_optimized_attachment(&storage_root, source_file_name, &attachment_base_name, &bytes)
+    store_optimized_attachment(
+        &storage_root,
+        source_file_name,
+        &attachment_base_name,
+        &bytes,
+    )
 }
 
 #[tauri::command]
@@ -286,7 +386,12 @@ fn save_image_attachment_bytes(
 ) -> Result<String, String> {
     let storage_root = active_storage_root(&app)?;
     ensure_legacy_image_migration(&storage_root)?;
-    store_optimized_attachment(&storage_root, &source_file_name, &attachment_base_name, &bytes)
+    store_optimized_attachment(
+        &storage_root,
+        &source_file_name,
+        &attachment_base_name,
+        &bytes,
+    )
 }
 
 #[tauri::command]
@@ -320,7 +425,11 @@ fn list_image_attachments(app: AppHandle) -> Result<Vec<ImageAttachmentInfo>, St
     let mut original_names: HashMap<String, String> = HashMap::new();
     for entry in fs::read_dir(&attachment_dir).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry.file_type().map_err(|error| error.to_string())?.is_file() {
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
             continue;
         }
 
@@ -363,7 +472,11 @@ fn list_image_attachments(app: AppHandle) -> Result<Vec<ImageAttachmentInfo>, St
         })
         .collect();
 
-    items.sort_by(|a, b| b.modified_at.cmp(&a.modified_at).then_with(|| a.file_name.cmp(&b.file_name)));
+    items.sort_by(|a, b| {
+        b.modified_at
+            .cmp(&a.modified_at)
+            .then_with(|| a.file_name.cmp(&b.file_name))
+    });
     Ok(items)
 }
 
@@ -386,7 +499,12 @@ fn delete_image_attachment(app: AppHandle, file_name: String) -> Result<(), Stri
     for entry in fs::read_dir(&attachment_dir).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let entry_name = entry.file_name().to_string_lossy().into_owned();
-        if attachment_group_key(&entry_name) == group_key && entry.file_type().map_err(|error| error.to_string())?.is_file() {
+        if attachment_group_key(&entry_name) == group_key
+            && entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_file()
+        {
             fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
         }
     }
@@ -407,7 +525,9 @@ fn storage_info(app: &AppHandle) -> Result<StorageInfo, String> {
     Ok(StorageInfo {
         path: path_to_string(&path),
         default_path: path_to_string(&default_path),
-        custom_path: config.storage_path.map(|value| path_to_string(&resolve_storage_root(&value))),
+        custom_path: config
+            .storage_path
+            .map(|value| path_to_string(&resolve_storage_root(&value))),
     })
 }
 
@@ -505,7 +625,8 @@ fn migrate_legacy_storage_file(app: &AppHandle, legacy_state_path: &Path) -> Res
     ensure_storage_layout(&storage_root)?;
 
     let state_content = fs::read_to_string(legacy_state_path).map_err(|error| error.to_string())?;
-    let parsed = serde_json::from_str::<Value>(&state_content).map_err(|error| error.to_string())?;
+    let parsed =
+        serde_json::from_str::<Value>(&state_content).map_err(|error| error.to_string())?;
     let (root_state, note_bundles, deleted_stack) = split_app_state(&parsed);
 
     write_json_file(&state_file_path_from_root(&storage_root), &root_state)?;
@@ -515,12 +636,18 @@ fn migrate_legacy_storage_file(app: &AppHandle, legacy_state_path: &Path) -> Res
     let legacy_root = legacy_state_path.parent().unwrap_or(legacy_state_path);
     let legacy_notes_dir = notes_dir_for_storage_root(legacy_root);
     if legacy_notes_dir.exists() {
-        copy_dir_recursive(&legacy_notes_dir, &notes_dir_for_storage_root(&storage_root))?;
+        copy_dir_recursive(
+            &legacy_notes_dir,
+            &notes_dir_for_storage_root(&storage_root),
+        )?;
     }
 
     let legacy_images_dir = legacy_images_dir_for_storage_root(legacy_root);
     if legacy_images_dir.exists() {
-        copy_dir_recursive(&legacy_images_dir, &images_dir_for_storage_root(&storage_root))?;
+        copy_dir_recursive(
+            &legacy_images_dir,
+            &images_dir_for_storage_root(&storage_root),
+        )?;
     }
 
     let legacy_deleted_stack = deleted_stack_file_path(legacy_root);
@@ -550,15 +677,16 @@ fn read_storage_config(app: &AppHandle) -> Result<StorageConfig, String> {
     }
 
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let config = serde_json::from_str::<StorageConfig>(&content).map_err(|error| error.to_string())?;
+    let config =
+        serde_json::from_str::<StorageConfig>(&content).map_err(|error| error.to_string())?;
 
     if let Some(storage_path) = config.storage_path.as_deref() {
         let expanded = expand_home_path(storage_path);
         if is_legacy_state_file_path(&expanded) {
-          migrate_legacy_storage_file(app, &expanded)?;
-          let default_config = StorageConfig::default();
-          write_json_file(&storage_config_path(app)?, &default_config)?;
-          return Ok(default_config);
+            migrate_legacy_storage_file(app, &expanded)?;
+            let default_config = StorageConfig::default();
+            write_json_file(&storage_config_path(app)?, &default_config)?;
+            return Ok(default_config);
         }
     }
 
@@ -572,12 +700,17 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 
 fn ensure_storage_layout(storage_root: &Path) -> Result<(), String> {
     fs::create_dir_all(storage_root).map_err(|error| error.to_string())?;
-    fs::create_dir_all(notes_dir_for_storage_root(storage_root)).map_err(|error| error.to_string())?;
-    fs::create_dir_all(images_dir_for_storage_root(storage_root)).map_err(|error| error.to_string())?;
+    fs::create_dir_all(notes_dir_for_storage_root(storage_root))
+        .map_err(|error| error.to_string())?;
+    fs::create_dir_all(images_dir_for_storage_root(storage_root))
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
-fn write_deleted_stack(storage_root: &Path, deleted_stack: &[DeletedSnapshot]) -> Result<(), String> {
+fn write_deleted_stack(
+    storage_root: &Path,
+    deleted_stack: &[DeletedSnapshot],
+) -> Result<(), String> {
     write_json_file(&deleted_stack_file_path(storage_root), &deleted_stack)
 }
 
@@ -616,7 +749,11 @@ fn write_note_bundles(storage_root: &Path, note_bundles: &[NoteBundle]) -> Resul
     if notes_dir.exists() {
         for entry in fs::read_dir(&notes_dir).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            if !entry.file_type().map_err(|error| error.to_string())?.is_file() {
+            if !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_file()
+            {
                 continue;
             }
 
@@ -665,7 +802,8 @@ fn write_search_index(storage_root: &Path, note_bundles: &[NoteBundle]) -> Resul
 
 fn read_full_app_state(app: &AppHandle, state_path: &Path) -> Result<String, String> {
     let root_content = fs::read_to_string(state_path).map_err(|error| error.to_string())?;
-    let root_value = serde_json::from_str::<Value>(&root_content).map_err(|error| error.to_string())?;
+    let root_value =
+        serde_json::from_str::<Value>(&root_content).map_err(|error| error.to_string())?;
     let storage_root = active_storage_root(app)?;
     let notes_dir = notes_dir_for_storage_root(&storage_root);
     let deleted_stack = read_deleted_stack(&storage_root)?;
@@ -680,18 +818,18 @@ fn read_full_app_state(app: &AppHandle, state_path: &Path) -> Result<String, Str
     if stripped_root != root_value {
         write_json_file(state_path, &stripped_root)?;
         if !legacy_note_bundles.is_empty() {
-          write_note_bundles(&storage_root, &legacy_note_bundles)?;
-          write_search_index(&storage_root, &legacy_note_bundles)?;
+            write_note_bundles(&storage_root, &legacy_note_bundles)?;
+            write_search_index(&storage_root, &legacy_note_bundles)?;
         }
         if !legacy_deleted_stack.is_empty() {
-          write_deleted_stack(&storage_root, &legacy_deleted_stack)?;
+            write_deleted_stack(&storage_root, &legacy_deleted_stack)?;
         }
     }
 
     let note_bundles = read_note_bundles(&notes_dir)?;
 
     if note_bundles.is_empty() && effective_deleted_stack.is_empty() {
-      return serde_json::to_string(&stripped_root).map_err(|error| error.to_string());
+        return serde_json::to_string(&stripped_root).map_err(|error| error.to_string());
     }
 
     let merged = merge_root_state_with_notes(root_value, note_bundles, effective_deleted_stack);
@@ -706,7 +844,11 @@ fn read_note_bundles(notes_dir: &Path) -> Result<Vec<NoteBundle>, String> {
     let mut bundles = Vec::new();
     for entry in fs::read_dir(notes_dir).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry.file_type().map_err(|error| error.to_string())?.is_file() {
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
             continue;
         }
 
@@ -716,7 +858,8 @@ fn read_note_bundles(notes_dir: &Path) -> Result<Vec<NoteBundle>, String> {
         }
 
         let content = fs::read_to_string(entry.path()).map_err(|error| error.to_string())?;
-        let bundle = serde_json::from_str::<NoteBundle>(&content).map_err(|error| error.to_string())?;
+        let bundle =
+            serde_json::from_str::<NoteBundle>(&content).map_err(|error| error.to_string())?;
         bundles.push(bundle);
     }
 
@@ -772,14 +915,20 @@ fn split_inner_state(value: Value) -> (Value, Vec<NoteBundle>, Vec<DeletedSnapsh
     let mut entries_by_note: HashMap<String, Vec<Value>> = HashMap::new();
     for entry in entries {
         if let Some(note_id) = entry.get("noteId").and_then(Value::as_str) {
-            entries_by_note.entry(note_id.to_string()).or_default().push(entry);
+            entries_by_note
+                .entry(note_id.to_string())
+                .or_default()
+                .push(entry);
         }
     }
 
     let mut todos_by_note: HashMap<String, Vec<Value>> = HashMap::new();
     for todo in todos {
         if let Some(note_id) = todo.get("noteId").and_then(Value::as_str) {
-            todos_by_note.entry(note_id.to_string()).or_default().push(todo);
+            todos_by_note
+                .entry(note_id.to_string())
+                .or_default()
+                .push(todo);
         }
     }
 
@@ -851,7 +1000,8 @@ fn merge_inner_state(
     root_map.insert("notes".to_string(), Value::Array(notes));
     root_map.insert("entries".to_string(), Value::Array(entries));
     root_map.insert("todos".to_string(), Value::Array(todos));
-    let deleted_stack_value = serde_json::to_value(deleted_stack).unwrap_or(Value::Array(Vec::new()));
+    let deleted_stack_value =
+        serde_json::to_value(deleted_stack).unwrap_or(Value::Array(Vec::new()));
     root_map.insert("deletedStack".to_string(), deleted_stack_value);
     root_map.remove("activities");
     inner_state
@@ -874,11 +1024,17 @@ fn build_note_search_text(title: &str, entries: &[Value], todos: &[Value]) -> St
 }
 
 fn build_note_preview(entries: &[Value], todos: &[Value]) -> String {
-    if let Some(entry) = entries.first().and_then(|value| value.get("content").and_then(Value::as_str)) {
+    if let Some(entry) = entries
+        .first()
+        .and_then(|value| value.get("content").and_then(Value::as_str))
+    {
         return preview_text(entry, 140);
     }
 
-    if let Some(todo) = todos.first().and_then(|value| value.get("title").and_then(Value::as_str)) {
+    if let Some(todo) = todos
+        .first()
+        .and_then(|value| value.get("title").and_then(Value::as_str))
+    {
         return preview_text(todo, 140);
     }
 
@@ -943,19 +1099,59 @@ fn cleanup_orphan_attachments(app: &AppHandle, state_json: &str) -> Result<(), S
     }
 
     let referenced = collect_attachment_reference_groups(&state);
+    let mut deleted_files = Vec::new();
     for entry in fs::read_dir(&attachment_dir).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry.file_type().map_err(|error| error.to_string())?.is_file() {
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
             continue;
         }
 
         let file_name = entry.file_name().to_string_lossy().into_owned();
         if !referenced.contains(&attachment_group_key(&file_name)) {
             fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
+            deleted_files.push(file_name);
         }
     }
-
     Ok(())
+}
+
+fn attachment_cleanup_scheduler() -> &'static AttachmentCleanupScheduler {
+    ATTACHMENT_CLEANUP_SCHEDULER.get_or_init(|| AttachmentCleanupScheduler {
+        generation: AtomicU64::new(0),
+        latest_state: Mutex::new(None),
+    })
+}
+
+fn schedule_orphan_attachment_cleanup(app: AppHandle, state_json: String) {
+    let scheduler = attachment_cleanup_scheduler();
+    let generation = scheduler.generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+    if let Ok(mut latest_state) = scheduler.latest_state.lock() {
+        *latest_state = Some(state_json);
+    } else {
+        return;
+    }
+
+    thread::spawn(move || {
+        thread::sleep(std::time::Duration::from_millis(ATTACHMENT_CLEANUP_DELAY_MS));
+
+        let scheduler = attachment_cleanup_scheduler();
+        let Ok(state_guard) = scheduler.latest_state.lock() else {
+            return;
+        };
+
+        if scheduler.generation.load(Ordering::SeqCst) != generation {
+            return;
+        }
+
+        if let Some(state_json) = state_guard.as_ref() {
+            let _ = cleanup_orphan_attachments(&app, state_json);
+        }
+    });
 }
 
 fn collect_attachment_references(value: &Value) -> HashSet<String> {
@@ -1067,7 +1263,11 @@ fn store_optimized_attachment(
     let attachment_dir = images_dir_for_storage_root(storage_root);
     fs::create_dir_all(&attachment_dir).map_err(|error| error.to_string())?;
 
-    let source_ext = if source_ext.is_empty() { "png".to_string() } else { source_ext };
+    let source_ext = if source_ext.is_empty() {
+        "png".to_string()
+    } else {
+        source_ext
+    };
     let original_file_name = format!("{safe_base}.original.{source_ext}");
     let original_path = attachment_dir.join(&original_file_name);
     fs::write(&original_path, bytes).map_err(|error| error.to_string())?;
@@ -1099,7 +1299,11 @@ fn source_file_extension(file_name: &str) -> String {
     String::new()
 }
 
-fn build_preview_attachment(bytes: &[u8], source_ext: &str, safe_base: &str) -> Result<(String, Vec<u8>), String> {
+fn build_preview_attachment(
+    bytes: &[u8],
+    source_ext: &str,
+    safe_base: &str,
+) -> Result<(String, Vec<u8>), String> {
     if matches!(source_ext, "svg" | "gif") {
         return Err("Skip optimization for vector/animated images.".to_string());
     }
@@ -1130,7 +1334,10 @@ fn build_preview_attachment(bytes: &[u8], source_ext: &str, safe_base: &str) -> 
             .map_err(|error| error.to_string())?;
     }
 
-    Ok((format!("{safe_base}.preview.{preview_ext}"), output.into_inner()))
+    Ok((
+        format!("{safe_base}.preview.{preview_ext}"),
+        output.into_inner(),
+    ))
 }
 
 fn normalize_custom_path(value: &str) -> Option<String> {
