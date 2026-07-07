@@ -482,7 +482,7 @@ function NewEntryPage() {
           value={titleDraft}
           onChange={(event) => setTitleDraft(event.target.value)}
           placeholder="Untitled Note"
-          className="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none"
+          className="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none"
         />
       </PageHeader>
       <WorkspaceToolbar
@@ -579,11 +579,11 @@ function NotesListPage() {
           sortedNotes.map((note) => (
             <button
               key={note.id}
-              className="surface-card surface-card-hover w-full rounded-lg border px-4 py-3 text-left"
+              className="note-list-card surface-card surface-card-hover w-full rounded-lg border px-4 py-3 text-left"
               onClick={() => selectNote(note.id)}
             >
               <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
-              <div className="mt-1 text-sm text-slate-600">{previewByNoteId.get(note.id) ?? 'No content yet.'}</div>
+              <div className="note-list-preview mt-1 text-sm text-slate-600">{previewByNoteId.get(note.id) ?? 'No content yet.'}</div>
               <div className="mt-1 text-xs text-slate-500">
                 Created {formatDate(note.createdAt)} · Updated {formatDate(note.updatedAt)}
               </div>
@@ -757,7 +757,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
             value={note.title}
             onChange={(event) => updateNoteTitle(note.id, event.target.value)}
             placeholder="Untitled Note"
-            className="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none"
+            className="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none"
           />
         </div>
       </PageHeader>
@@ -2123,18 +2123,28 @@ function EntryCard({ entryId }: { entryId: string }) {
         </div>
       </div>
       {todos.length > 0 ? (
-        <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
-          {todos.map((todo) => (
-            <label key={todo.id} className="flex items-start gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={todo.status === 'done'}
-                onChange={(event) => toggleTodo(todo.id, event.target.checked)}
-                className="mt-1"
-              />
-              <span className={todo.status === 'done' ? 'text-slate-400 line-through' : ''}>{todo.title}</span>
-            </label>
-          ))}
+        <div className="note-todo-card surface-card mt-4 rounded-lg border p-3">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
+            <CheckSquare className="h-3.5 w-3.5" />
+            <span>ToDo List</span>
+            <span className="note-todo-count ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+              {todos.length}
+            </span>
+          </div>
+          <div className="my-2 border-t border-slate-300" />
+          <div className="space-y-2">
+            {todos.map((todo) => (
+              <label key={todo.id} className="flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={todo.status === 'done'}
+                  onChange={(event) => toggleTodo(todo.id, event.target.checked)}
+                  className="mt-1"
+                />
+                <span className={todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-700'}>{todo.title}</span>
+              </label>
+            ))}
+          </div>
         </div>
       ) : null}
     </article>
@@ -2168,7 +2178,7 @@ function TodosPage() {
           todos.map((todo) => {
             const source = notes.find((note) => note.id === todo.noteId)?.title ?? 'Standalone';
             return (
-              <div key={todo.id} className="surface-card surface-card-hover flex items-center gap-3 rounded-lg border p-4">
+              <div key={todo.id} className="todo-list-card surface-card surface-card-hover flex items-center gap-3 rounded-lg border p-4">
                 <input
                   type="checkbox"
                   checked={todo.status === 'done'}
@@ -2191,7 +2201,7 @@ function TodosPage() {
                   <div className="mt-1 text-xs text-slate-500">
                     Created {formatDate(todo.createdAt)}
                     <span className="mx-1 text-slate-300">·</span>
-                    {todo.noteId ? 'Open note: ' : 'Source: '}
+                    {todo.noteId ? 'Source note: ' : 'Source: '}
                     <span className={todo.noteId ? 'font-medium text-slate-700 hover:text-slate-900' : ''}>{source}</span>
                   </div>
                 </button>
@@ -2802,8 +2812,8 @@ function PageHeader({
 }) {
   return (
     <header className="border-b border-slate-200 bg-slate-50 px-6 py-4">
-      {children ?? <h1 className="text-lg font-semibold">{title}</h1>}
-      {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
+      {children ?? <h1 className="text-base font-semibold">{title}</h1>}
+      {subtitle ? <p className="mt-1 text-xs text-slate-500">{subtitle}</p> : null}
     </header>
   );
 }

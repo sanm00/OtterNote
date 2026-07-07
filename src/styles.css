@@ -237,6 +237,34 @@ button:disabled {
   white-space: pre-line;
 }
 
+.note-todo-card {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.todo-list-card {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.note-list-card {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.note-list-card.surface-card-hover:hover,
+.todo-list-card.surface-card-hover:hover {
+  background: #e2e8f0;
+}
+
+.note-list-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .pinned-note-content .markdown-content p,
 .pinned-note-content .markdown-content li {
   white-space: pre-line;
@@ -245,6 +273,47 @@ button:disabled {
 [data-theme='dark'] .surface-card {
   background: #0f172a;
   border-color: #334155;
+}
+
+[data-theme='dark'] .note-todo-card {
+  background: #1e293b;
+  border-color: #475569;
+  box-shadow: none;
+}
+
+[data-theme='dark'] .todo-list-card {
+  background: #1e293b;
+  border-color: #475569;
+}
+
+[data-theme='dark'] .note-list-card {
+  background: #1e293b;
+  border-color: #475569;
+}
+
+[data-theme='dark'] .note-list-card.surface-card-hover:hover,
+[data-theme='dark'] .todo-list-card.surface-card-hover:hover {
+  background: #334155;
+}
+
+[data-theme='dark'] .note-todo-card label:hover {
+  background: #334155;
+}
+
+[data-theme='dark'] .note-todo-card .border-slate-300 {
+  border-color: #475569;
+}
+
+[data-theme='dark'] .note-todo-card span {
+  color: #cbd5e1;
+}
+
+[data-theme='dark'] .note-todo-count {
+  background: #1e293b;
+}
+
+[data-theme='dark'] .note-todo-card .line-through {
+  color: #64748b;
 }
 
 [data-theme='dark'] .theme-choice {
