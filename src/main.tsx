@@ -16,7 +16,6 @@ import {
   Image as ImageIcon,
   Keyboard,
   NotebookText,
-  Pencil,
   Pin,
   Moon,
   Upload,
@@ -27,6 +26,8 @@ import {
   Trash2,
   SunMedium,
   FilePenLine,
+  FilePlus,
+  ListTodo,
   X,
 } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
@@ -77,7 +78,10 @@ const PINNED_NOTE_AUTOSAVE_DELAY_MS = 5_000;
 
 const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'notes', label: 'Notes', icon: NotebookText },
-  { id: 'todos', label: 'ToDos', icon: CheckSquare },
+  { id: 'todos', label: 'ToDos', icon: ListTodo },
+];
+
+const auxiliaryNavItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'timeline', label: 'Timeline', icon: Clock3 },
   { id: 'images', label: 'Images', icon: ImageIcon },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -118,7 +122,7 @@ function App() {
     activeSection !== 'images';
 
   return (
-    <div className="app-shell flex h-screen bg-slate-50 text-slate-950">
+    <div className="app-shell flex h-screen text-slate-950">
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col">
         {showSearchResults ? <SearchResultsPage query={query} /> : null}
@@ -243,7 +247,9 @@ function Sidebar() {
   const recentNoteIds = useAppStore((state) => state.recentNoteIds);
   const selectedNoteId = useAppStore((state) => state.selectedNoteId);
   const selectNote = useAppStore((state) => state.selectNote);
+  const shortcuts = useAppStore((state) => state.shortcuts);
   const logoSrc = theme === 'dark' ? '/app-logo-dark.png' : '/app-logo.png';
+  const newShortcutLabel = normalizeShortcutLabel((shortcuts?.new ?? defaultShortcuts.new) || '');
 
   const recentNotes = React.useMemo(() => {
     const recent = recentNoteIds
@@ -262,8 +268,8 @@ function Sidebar() {
   }, [notes, recentNoteIds]);
 
   return (
-    <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r border-blue-100 bg-blue-50/80">
-      <div className="px-3 pt-11">
+    <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r">
+      <div className="px-3 pt-8">
         <div className="px-1 pb-1.5">
           <div className="flex items-center gap-2">
             <button
@@ -280,30 +286,30 @@ function Sidebar() {
                 setActiveSection('new');
               }}
             >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[color:var(--app-toggle-surface)] ring-1 ring-[color:var(--app-toggle-border)]">
+              <span className="sidebar-brand-mark flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg">
                 <img
                   src={logoSrc}
                   alt=""
                   aria-hidden="true"
-                  className="h-8 w-8 rounded-lg object-cover"
+                  className="h-7 w-7 rounded-md object-cover"
                 />
               </span>
               <div className="min-w-0">
-                <div className="truncate text-lg font-semibold text-blue-950">OtterNote</div>
+                <div className="truncate text-base font-semibold text-slate-950">OtterNote</div>
                 <div className="truncate text-[11px] text-slate-500">Notes, todo, timeline</div>
               </div>
             </button>
             <button
               type="button"
-              className="secondary-button ml-auto h-9 w-9 shrink-0 !p-0"
+              className="icon-button tooltip-button ml-auto shrink-0"
+              data-tooltip={newShortcutLabel ? `New note · ${newShortcutLabel}` : 'New note'}
               onClick={() => {
                 clearSelectedNote();
                 setActiveSection('new');
               }}
-              title="New note"
               aria-label="New note"
             >
-              <FilePenLine className="h-4 w-4" />
+              <FilePlus className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -311,7 +317,7 @@ function Sidebar() {
 
       <div className="px-3">
         <label className="relative block">
-          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+          <Search className="pointer-events-none absolute left-3 top-2 h-4 w-4 text-slate-400" />
             <input
               data-search-input="true"
               value={query}
@@ -322,50 +328,49 @@ function Sidebar() {
               }}
               onBlur={() => setSearchFocused(false)}
               placeholder="Search notes, todos..."
-              className="h-10 w-full rounded-md border border-blue-100 bg-white pl-9 pr-3 text-sm outline-none ring-blue-200 focus:ring-2"
+              className="sidebar-search h-9 w-full rounded-md border pl-9 pr-3 text-sm outline-none focus:ring-2"
             />
         </label>
       </div>
 
-      <section className="min-h-0 flex-1 overflow-y-auto px-3 pt-1">
-        <div className="mb-0.5 px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recent opened</div>
+      <section className="flex min-h-0 flex-1 flex-col px-3 pt-1">
+        <div className="sidebar-section-label mb-1 px-1 text-[11px] font-medium text-slate-500">Recent</div>
         {recentNotes.length === 0 ? (
-          <p className="rounded-md border border-dashed border-blue-200 bg-white/60 p-3 text-sm text-slate-500">
+          <p className="sidebar-empty-note">
             No recently opened notes.
           </p>
         ) : (
-          <div className="mb-2.5 space-y-0">
+          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1">
             {recentNotes.map((note) => (
               <button
                 key={note.id}
-                className={`sidebar-item w-full rounded-md px-3 py-0.5 text-left text-[13px] leading-5 ${
+                className={`sidebar-item w-full rounded-md py-1.5 pl-4 pr-3 text-left text-[13px] leading-5 ${
                   selectedNoteId === note.id ? 'sidebar-selected' : 'text-slate-700 hover:bg-slate-50'
                 }`}
                 onClick={() => selectNote(note.id)}
               >
                 <div className="truncate font-medium">{displayTitle(note.title)}</div>
-                <div className={`truncate text-[9px] leading-4 ${selectedNoteId === note.id ? 'sidebar-selected-meta' : 'text-slate-500'}`}>
+                <div className={`truncate text-[10px] leading-4 ${selectedNoteId === note.id ? 'sidebar-selected-meta' : 'text-slate-500'}`}>
                   {formatDate(note.updatedAt)}
                 </div>
               </button>
             ))}
           </div>
         )}
-
       </section>
 
-      <nav className="border-t border-blue-100 p-3">
-        <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-          Navigation
+      <nav className="border-t border-[color:var(--app-border-soft)] px-3 py-2">
+        <div className="sidebar-section-label mb-0.5 px-1 text-[10px] font-medium text-slate-500">
+          Workspace
         </div>
-        <div className="space-y-0.5">
+        <div className="space-y-0">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeSection === item.id;
             return (
               <button
                 key={item.id}
-                className={`sidebar-item flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-[13px] font-medium leading-5 ${
+                className={`sidebar-item flex w-full items-center gap-2 rounded-md py-1 pl-4 pr-3 text-[13px] font-medium leading-5 ${
                   active ? 'sidebar-selected' : 'text-slate-700 hover:bg-slate-50'
                 }`}
                 onClick={() => {
@@ -375,8 +380,26 @@ function Sidebar() {
                   }
                 }}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className={`h-4 w-4 ${active ? '' : 'text-slate-400'}`} />
                 {item.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-1.5 flex items-center justify-start gap-1.5 px-1">
+          {auxiliaryNavItems.map((item) => {
+            const Icon = item.icon;
+            const active = activeSection === item.id;
+            return (
+              <button
+                key={item.id}
+                className={`sidebar-aux-nav-item tooltip-button tooltip-above ${active ? 'sidebar-aux-nav-active' : ''}`}
+                data-tooltip={item.label}
+                onClick={() => setActiveSection(item.id)}
+                aria-label={item.label}
+                type="button"
+              >
+                <Icon className="h-4 w-4" />
               </button>
             );
           })}
@@ -387,10 +410,22 @@ function Sidebar() {
 }
 
 function TimelineEmptyState() {
+  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
+  const setActiveSection = useAppStore((state) => state.setActiveSection);
+
   return (
     <Page title="Timeline" subtitle="Notes grouped by time">
       <div className="mx-auto w-full max-w-3xl">
-        <EmptyMessage title="No notes yet" message="Create notes to populate the timeline." />
+        <EmptyMessage
+          title="No notes yet"
+          message="Create notes to populate the timeline."
+          icon={Clock3}
+          actionLabel="New note"
+          onAction={() => {
+            clearSelectedNote();
+            setActiveSection('new');
+          }}
+        />
       </div>
     </Page>
   );
@@ -405,6 +440,7 @@ function NewEntryPage() {
   const [draft, setDraft] = React.useState('');
   const [status, setStatus] = React.useState('');
   const editorViewRef = React.useRef<EditorView | null>(null);
+  const hasDraftContent = Boolean(titleDraft.trim() || draft.trim());
   const updateTitleFromContent = React.useCallback((content: string) => {
     setTitleDraft(titleFromFirstLine(content));
   }, []);
@@ -455,60 +491,87 @@ function NewEntryPage() {
     }
     setTitleDraft('');
     setDraft('');
-    setStatus('');
+    setStatus('Saved');
   }, [createNote, createNoteWithEntry, draft, titleDraft]);
+
+  const cancelDraft = React.useCallback(() => {
+    if (hasDraftContent && !window.confirm('Discard this unsaved note?')) {
+      return;
+    }
+    setTitleDraft('');
+    setDraft('');
+    setStatus('');
+    clearSelectedNote();
+    setActiveSection('notes');
+  }, [clearSelectedNote, hasDraftContent, setActiveSection]);
 
   React.useEffect(() => {
     const onSave = () => saveDraft();
-    const onCancel = () => {
-      setTitleDraft('');
-      setDraft('');
-      setStatus('');
-      clearSelectedNote();
-      setActiveSection('notes');
-    };
+    const onCancel = () => cancelDraft();
     window.addEventListener('otter:save', onSave);
     window.addEventListener('otter:cancel', onCancel);
     return () => {
       window.removeEventListener('otter:save', onSave);
       window.removeEventListener('otter:cancel', onCancel);
     };
-  }, [clearSelectedNote, saveDraft, setActiveSection]);
+  }, [cancelDraft, saveDraft]);
+
+  React.useEffect(() => {
+    if (!status) return;
+    const timeout = window.setTimeout(() => setStatus(''), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [status]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-white">
-      <PageHeader subtitle="Write quickly, then save to create a note.">
-        <input
-          value={titleDraft}
-          onChange={(event) => setTitleDraft(event.target.value)}
-          placeholder="Untitled Note"
-          className="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none"
-        />
-      </PageHeader>
-      <WorkspaceToolbar
-        mode="edit"
-        showEditButton={false}
-        onPin={pinNewNote}
-        onInsertImage={insertImage}
-        onSave={saveDraft}
-        onDelete={undefined}
-        saveLabel="Save"
-      />
-      {status ? <div className="px-6 pt-2 text-xs text-slate-500">{status}</div> : null}
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="editor-shell mx-auto w-full max-w-3xl">
-          <CodeMirror
-            value={draft}
-            height="100%"
-            extensions={[markdown(), imagePasteExtension((file, view) => insertImageFile(file, updateDraft, view))]}
-            basicSetup={{ lineNumbers: false, foldGutter: false }}
-            onChange={updateDraft}
-            onCreateEditor={(view) => {
-              editorViewRef.current = view;
-              view.focus();
+    <div className="app-workspace relative flex min-h-0 flex-1 flex-col">
+      <DocumentHeader
+        subtitle="Write quickly, then save to create a note."
+        titleInput={(
+          <input
+            value={titleDraft}
+            onChange={(event) => setTitleDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                editorViewRef.current?.focus();
+              }
             }}
-            placeholder={'Start writing...\n\n- [ ] Add a ToDo'}
+            placeholder="Untitled Note"
+            className="document-title-input"
           />
+        )}
+        toolbar={(
+          <WorkspaceToolbar
+            mode="edit"
+            showEditButton={false}
+            onPin={pinNewNote}
+            onInsertImage={insertImage}
+            onSave={saveDraft}
+            onCancel={cancelDraft}
+            saveDisabled={!hasDraftContent}
+            isDirty={hasDraftContent}
+            onDelete={undefined}
+            saveLabel="Save"
+          />
+        )}
+      />
+      <StatusToast message={status} />
+      <div className="flex min-h-0 flex-1 px-6 py-5">
+        <div className="editor-workspace flex min-h-0 flex-1 w-full">
+          <div className="editor-shell">
+            <CodeMirror
+              value={draft}
+              height="100%"
+              extensions={[markdown(), EditorView.lineWrapping, imagePasteExtension((file, view) => insertImageFile(file, updateDraft, view))]}
+              basicSetup={{ lineNumbers: false, foldGutter: false }}
+              onChange={updateDraft}
+              onCreateEditor={(view) => {
+                editorViewRef.current = view;
+                view.focus();
+              }}
+              placeholder={'Start writing...\n\n- [ ] Add a ToDo'}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -518,13 +581,24 @@ function NewEntryPage() {
 function Timeline() {
   const notes = useAppStore((state) => state.notes);
   const selectNote = useAppStore((state) => state.selectNote);
+  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
+  const setActiveSection = useAppStore((state) => state.setActiveSection);
   const groups = React.useMemo(() => groupNotesByDate(notes), [notes]);
 
   return (
     <Page title="Timeline" subtitle="Notes grouped by time">
       <div className="mx-auto w-full max-w-3xl space-y-2.5">
         {groups.length === 0 ? (
-          <EmptyMessage title="No notes yet" message="Create notes to populate the timeline." />
+          <EmptyMessage
+            title="No notes yet"
+            message="Create notes to populate the timeline."
+            icon={Clock3}
+            actionLabel="New note"
+            onAction={() => {
+              clearSelectedNote();
+              setActiveSection('new');
+            }}
+          />
         ) : (
           groups.map((group) => (
             <section key={group.label}>
@@ -533,7 +607,7 @@ function Timeline() {
                 {group.notes.map((note) => (
                   <button
                     key={note.id}
-                    className="surface-card surface-card-hover w-full rounded-lg border px-4 py-3 text-left"
+                    className="content-card content-card-hover w-full rounded-lg px-4 py-3 text-left"
                     onClick={() => selectNote(note.id)}
                   >
                     <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
@@ -561,6 +635,8 @@ function NotesListPage() {
   const entries = useAppStore((state) => state.entries);
   const todos = useAppStore((state) => state.todos);
   const selectNote = useAppStore((state) => state.selectNote);
+  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
+  const setActiveSection = useAppStore((state) => state.setActiveSection);
   const sortedNotes = React.useMemo(() => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [notes]);
   const previewByNoteId = React.useMemo(() => {
     const next = new Map<string, string>();
@@ -574,12 +650,21 @@ function NotesListPage() {
     <Page title="Notes" subtitle="All notes">
       <div className="mx-auto w-full max-w-3xl space-y-2.5">
         {sortedNotes.length === 0 ? (
-          <EmptyMessage title="No notes yet" message="Create a note to start writing." />
+          <EmptyMessage
+            title="No notes yet"
+            message="Create a note to start writing."
+            icon={NotebookText}
+            actionLabel="New note"
+            onAction={() => {
+              clearSelectedNote();
+              setActiveSection('new');
+            }}
+          />
         ) : (
           sortedNotes.map((note) => (
             <button
               key={note.id}
-              className="note-list-card surface-card surface-card-hover w-full rounded-lg border px-4 py-3 text-left"
+              className="note-list-card content-card content-card-hover w-full rounded-lg px-4 py-3 text-left"
               onClick={() => selectNote(note.id)}
             >
               <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
@@ -614,9 +699,19 @@ function NoteDetail({ noteId }: { noteId: string }) {
 
     return allEntries.filter((entry) => entry.noteId === noteId);
   }, [allEntries, bundle, noteId]);
+  const originalDraftContent = React.useMemo(() => {
+    if (!isEditing) return '';
+    if (draftEntryId) {
+      return entries.find((entry) => entry.id === draftEntryId)?.content ?? '';
+    }
+    return '';
+  }, [draftEntryId, entries, isEditing]);
+  const hasUnsavedEntryChanges = isEditing && draftContent !== originalDraftContent;
+  const canSaveDraft = isEditing && draftContent.trim().length > 0 && hasUnsavedEntryChanges;
 
   React.useEffect(() => {
     let cancelled = false;
+    setBundle(null);
     const load = async () => {
       try {
         const content = await readNoteBundle(noteId);
@@ -635,6 +730,19 @@ function NoteDetail({ noteId }: { noteId: string }) {
       cancelled = true;
     };
   }, [noteId, note?.updatedAt]);
+
+  React.useEffect(() => {
+    editorViewRef.current = null;
+    setStatus('');
+    if (!isEditing) {
+      return;
+    }
+
+    const nextEntries = allEntries.filter((entry) => entry.noteId === noteId);
+    const firstEntry = nextEntries[0];
+    setDraftEntryId(firstEntry?.id ?? null);
+    setDraftContent(firstEntry?.content ?? '');
+  }, [noteId]);
 
   const deleteCurrentNote = React.useCallback(() => {
     if (!note) return;
@@ -693,21 +801,29 @@ function NoteDetail({ noteId }: { noteId: string }) {
     setIsEditing(true);
   }, [entries, note]);
 
-  const cancelEditing = React.useCallback(() => {
+  const finishEditing = React.useCallback(() => {
     setDraftEntryId(null);
     setDraftContent('');
     setIsEditing(false);
   }, []);
 
+  const cancelEditing = React.useCallback(() => {
+    if (hasUnsavedEntryChanges && !window.confirm('Discard unsaved changes?')) {
+      return;
+    }
+    finishEditing();
+  }, [finishEditing, hasUnsavedEntryChanges]);
+
   const saveDraft = React.useCallback(() => {
-    if (!note || !draftContent.trim()) return;
+    if (!note || !canSaveDraft) return;
     if (draftEntryId) {
       useAppStore.getState().updateEntry(draftEntryId, draftContent);
     } else {
       addEntry(note.id, draftContent);
     }
-    cancelEditing();
-  }, [addEntry, cancelEditing, draftContent, draftEntryId, note]);
+    setStatus('Saved');
+    finishEditing();
+  }, [addEntry, canSaveDraft, draftContent, draftEntryId, finishEditing, note]);
 
   const insertImage = React.useCallback(async () => {
     try {
@@ -747,40 +863,66 @@ function NoteDetail({ noteId }: { noteId: string }) {
     };
   }, [cancelEditing, deleteCurrentNote, isEditing, saveDraft, startEditing]);
 
+  React.useEffect(() => {
+    if (!status) return;
+    const timeout = window.setTimeout(() => setStatus(''), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [status]);
+
   if (!note) return null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-slate-50">
-      <PageHeader subtitle={`Updated ${formatDate(note.updatedAt)}`}>
-        <div className="flex items-center gap-3">
+    <div className="app-workspace relative flex min-h-0 flex-1 flex-col">
+      <DocumentHeader
+        subtitle={`Updated ${formatDate(note.updatedAt)}`}
+        titleInput={(
+          <div className="flex items-center gap-3">
           <input
             value={note.title}
             onChange={(event) => updateNoteTitle(note.id, event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                if (!isEditing) {
+                  startEditing();
+                  window.setTimeout(() => editorViewRef.current?.focus(), 0);
+                  return;
+                }
+                editorViewRef.current?.focus();
+              }
+            }}
             placeholder="Untitled Note"
-            className="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none"
+            className="document-title-input"
           />
-        </div>
-      </PageHeader>
-      <WorkspaceToolbar
-        mode={isEditing ? 'edit' : 'preview'}
-        showEditButton={true}
-        onExport={exportCurrentNote}
-        onPin={pinCurrentNote}
+          </div>
+        )}
+        toolbar={(
+          <WorkspaceToolbar
+            mode={isEditing ? 'edit' : 'preview'}
+            showEditButton={true}
+            onExport={exportCurrentNote}
+            onPin={pinCurrentNote}
         onInsertImage={isEditing ? insertImage : undefined}
-        onSave={saveDraft}
-        onEdit={startEditing}
-        onDelete={deleteCurrentNote}
-        saveLabel="Save"
+          onSave={saveDraft}
+          onEdit={startEditing}
+          onCancel={isEditing ? cancelEditing : undefined}
+          saveDisabled={isEditing ? !canSaveDraft : false}
+          isDirty={hasUnsavedEntryChanges}
+          onDelete={deleteCurrentNote}
+          saveLabel="Save"
+        />
+        )}
       />
-      {status ? <div className="px-6 pt-2 text-xs text-slate-500">{status}</div> : null}
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto w-full max-w-3xl space-y-3.5">
+      <StatusToast message={status} />
+      <div className={`min-h-0 flex-1 px-6 py-5 ${isEditing ? 'flex' : 'overflow-y-auto'}`}>
+        <div className={`w-full ${isEditing ? 'editor-workspace flex min-h-0 flex-1' : 'mx-auto max-w-3xl space-y-3.5'}`}>
           {isEditing ? (
             <div className="editor-shell">
               <CodeMirror
+                key={noteId}
                 value={draftContent}
                 height="100%"
-                extensions={[markdown(), imagePasteExtension((file, view) => insertImageFile(file, setDraftContent, view))]}
+                extensions={[markdown(), EditorView.lineWrapping, imagePasteExtension((file, view) => insertImageFile(file, setDraftContent, view))]}
                 basicSetup={{ lineNumbers: false, foldGutter: false }}
                 onChange={setDraftContent}
                 onCreateEditor={(view) => {
@@ -790,10 +932,10 @@ function NoteDetail({ noteId }: { noteId: string }) {
               />
             </div>
           ) : entries.length === 0 ? (
-            <article className="p-4">
+            <article className="entry-card">
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm italic text-slate-400">
+                  <div className="document-empty-hint">
                     No note text. This note only has a title.
                   </div>
                 </div>
@@ -1045,7 +1187,7 @@ function PinnedNewNoteWindow() {
           <CodeMirror
             value={draft}
             height="100%"
-            extensions={[markdown(), imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view))]}
+            extensions={[markdown(), EditorView.lineWrapping, imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view))]}
             basicSetup={{ lineNumbers: false, foldGutter: false }}
             onChange={updateDraft}
             onCreateEditor={(view) => {
@@ -1358,7 +1500,7 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
             <CodeMirror
               value={draftContent}
               height="100%"
-              extensions={[markdown(), imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view))]}
+              extensions={[markdown(), EditorView.lineWrapping, imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view))]}
               basicSetup={{ lineNumbers: false, foldGutter: false }}
               onChange={setDraftContent}
               onCreateEditor={(view) => {
@@ -1418,7 +1560,10 @@ function WorkspaceToolbar({
   onInsertImage,
   onSave,
   onEdit,
+  onCancel,
   onDelete,
+  saveDisabled = false,
+  isDirty = false,
   saveLabel,
 }: {
   mode: 'preview' | 'edit';
@@ -1428,48 +1573,112 @@ function WorkspaceToolbar({
   onInsertImage?: () => void;
   onSave: () => void;
   onEdit?: () => void;
+  onCancel?: () => void;
   onDelete?: () => void;
+  saveDisabled?: boolean;
+  isDirty?: boolean;
   saveLabel: string;
 }) {
+  const shortcuts = useAppStore((state) => state.shortcuts);
+  const shortcutConfig = {
+    ...defaultShortcuts,
+    ...shortcuts,
+  };
+  const tooltip = React.useCallback(
+    (label: string, action?: ShortcutAction) => {
+      const shortcut = action ? normalizeShortcutLabel(shortcutConfig[action] ?? '') : '';
+      return shortcut ? `${label} · ${shortcut}` : label;
+    },
+    [shortcutConfig],
+  );
+
   return (
-    <div className="border-b border-slate-200 bg-slate-50 px-6 py-3">
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {onExport ? (
-          <button type="button" className="secondary-button" onClick={onExport}>
-            <Download className="h-4 w-4" />
-            Export
-          </button>
+    <div className="app-toolbar">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {onExport || onPin || (mode === 'edit' && onInsertImage) ? (
+          <div className="toolbar-group">
+            {onExport ? (
+              <button type="button" className="icon-button tooltip-button" data-tooltip="Export" onClick={onExport} aria-label="Export note">
+                <Download className="h-4 w-4" />
+              </button>
+            ) : null}
+            {onPin ? (
+              <button type="button" className="icon-button tooltip-button" data-tooltip="Pin" onClick={onPin} aria-label="Pin note">
+                <Pin className="h-4 w-4" />
+              </button>
+            ) : null}
+            {mode === 'edit' && onInsertImage ? (
+              <button type="button" className="icon-button tooltip-button" data-tooltip="Image" onClick={onInsertImage} aria-label="Insert image">
+                <ImageIcon className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
         ) : null}
-        {onPin ? (
-          <button type="button" className="secondary-button" onClick={onPin}>
-            <Pin className="h-4 w-4" />
-            Pin
-          </button>
-        ) : null}
-        {mode === 'edit' && onInsertImage ? (
-          <button type="button" className="secondary-button" onClick={onInsertImage}>
-            <ImageIcon className="h-4 w-4" />
-            Image
-          </button>
-        ) : null}
-        {mode === 'edit' ? (
-          <button type="button" className="primary-button" onClick={onSave}>
-            <Save className="h-4 w-4" />
-            {saveLabel}
-          </button>
-        ) : showEditButton ? (
-          <button type="button" className="secondary-button" onClick={onEdit}>
-            <Pencil className="h-4 w-4" />
-            Edit
-          </button>
+        {mode === 'edit' || showEditButton ? (
+          <div className="toolbar-group">
+            {mode === 'edit' ? (
+              <button
+                type="button"
+                className={`icon-button icon-button-primary tooltip-button ${isDirty ? 'icon-button-dirty' : ''}`}
+                data-tooltip={tooltip(saveLabel, 'save')}
+                onClick={onSave}
+                aria-label={saveLabel}
+                disabled={saveDisabled}
+              >
+                <Save className="h-4 w-4" />
+              </button>
+            ) : (
+              <button type="button" className="icon-button icon-button-primary tooltip-button" data-tooltip={tooltip('Edit', 'edit')} onClick={onEdit} aria-label="Edit note">
+                <FilePenLine className="h-4 w-4" />
+              </button>
+            )}
+            {mode === 'edit' && onCancel ? (
+              <button type="button" className="icon-button tooltip-button" data-tooltip={tooltip('Cancel', 'cancel')} onClick={onCancel} aria-label="Cancel editing">
+                <X className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
         ) : null}
         {onDelete ? (
-          <button type="button" className="secondary-button text-red-700 hover:bg-red-50" onClick={onDelete}>
-            <Trash2 className="h-4 w-4" />
-            Delete
-          </button>
+          <div className="toolbar-group toolbar-group-danger">
+            <button type="button" className="icon-button icon-button-danger tooltip-button tooltip-align-end" data-tooltip={tooltip('Delete', 'delete')} onClick={onDelete} aria-label="Delete note">
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function DocumentHeader({
+  titleInput,
+  subtitle,
+  toolbar,
+}: {
+  titleInput: React.ReactNode;
+  subtitle?: string;
+  toolbar: React.ReactNode;
+}) {
+  return (
+    <header className="document-header border-b px-6 py-4">
+      <div className="flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          {titleInput}
+          {subtitle ? <p className="mt-1 text-xs text-slate-500">{subtitle}</p> : null}
+        </div>
+        <div className="document-header-toolbar pt-0.5">{toolbar}</div>
+      </div>
+    </header>
+  );
+}
+
+function StatusToast({ message }: { message: string }) {
+  if (!message) return null;
+
+  return (
+    <div className="workspace-toast" role="status" aria-live="polite">
+      {message}
     </div>
   );
 }
@@ -2110,7 +2319,7 @@ function EntryCard({ entryId }: { entryId: string }) {
   if (!entry) return null;
 
   return (
-    <article className="p-4">
+    <article className="entry-card">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           {entry.content.trim() ? (
@@ -2118,12 +2327,12 @@ function EntryCard({ entryId }: { entryId: string }) {
               <MarkdownContent content={entry.content} />
             </div>
           ) : (
-            <div className="text-sm italic text-slate-400">No note text. This entry contains only ToDo items.</div>
+            <div className="document-empty-hint">No note text. This entry contains only ToDo items.</div>
           )}
         </div>
       </div>
       {todos.length > 0 ? (
-        <div className="note-todo-card surface-card mt-4 rounded-lg border p-3">
+        <div className="note-todo-card mt-4 rounded-lg border p-3">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
             <CheckSquare className="h-3.5 w-3.5" />
             <span>ToDo List</span>
@@ -2173,12 +2382,12 @@ function TodosPage() {
     <Page title="ToDos" subtitle="Tasks extracted from notes">
       <div className="mx-auto w-full max-w-3xl space-y-2">
         {todos.length === 0 ? (
-          <EmptyMessage title="No ToDo items" message="Add - [ ] inside a note entry." />
+          <EmptyMessage title="No ToDo items" message="Add - [ ] inside a note entry." icon={CheckSquare} />
         ) : (
           todos.map((todo) => {
             const source = notes.find((note) => note.id === todo.noteId)?.title ?? 'Standalone';
             return (
-              <div key={todo.id} className="todo-list-card surface-card surface-card-hover flex items-center gap-3 rounded-lg border p-4">
+              <div key={todo.id} className="todo-list-card content-card content-card-hover flex items-center gap-3 rounded-lg p-4">
                 <input
                   type="checkbox"
                   checked={todo.status === 'done'}
@@ -2309,47 +2518,59 @@ function ImagesPage() {
           <EmptyMessage
             title="Images are not stored separately here"
             message="Browser preview uses inline image data. Open the Tauri desktop app to manage uploaded images."
+            icon={ImageIcon}
           />
         ) : loading ? (
-          <EmptyMessage title="Loading images" message="Reading attachment files..." />
+          <EmptyMessage title="Loading images" message="Reading attachment files..." icon={ImageIcon} />
         ) : error ? (
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
         ) : attachments.length === 0 ? (
-          <EmptyMessage title="No uploaded images" message="Use the image button or paste an image into a note." />
+          <EmptyMessage title="No uploaded images" message="Use the image button or paste an image into a note." icon={ImageIcon} />
         ) : (
-          attachments.map((item) => {
-            const usageCount = attachmentUsage.get(item.fileName) ?? 0;
-            return (
-              <div key={item.fileName} className="surface-card flex items-center gap-4 rounded-lg border p-4">
-                <button
-                  className="shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-50"
-                  onClick={() => setViewerFileName(item.originalFileName)}
-                  title="View original image"
-                >
-                  <AttachmentPreviewImage fileName={item.fileName} alt={item.fileName} className="h-20 w-20 object-cover" />
-                </button>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-slate-900">{item.fileName}</div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    {formatBytes(item.size)} · Updated {formatAttachmentTime(item.modifiedAt)}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+            {attachments.map((item) => {
+              const usageCount = attachmentUsage.get(item.fileName) ?? 0;
+              return (
+                <div key={item.fileName} className="attachment-card content-card overflow-hidden rounded-lg">
+                  <div className="attachment-actions">
+                    <button
+                      className="icon-button h-8 w-8"
+                      onClick={() => copyReference(item.fileName)}
+                      title="Copy markdown reference"
+                      aria-label={`Copy markdown reference for ${item.fileName}`}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+                    <button
+                      className="icon-button icon-button-danger h-8 w-8"
+                      onClick={() => removeAttachment(item.fileName)}
+                      title="Delete image"
+                      aria-label={`Delete ${item.fileName}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
-                  <div className="mt-2 text-xs text-slate-500">
-                    {usageCount > 0 ? `Referenced in ${usageCount} place(s)` : 'Not referenced'}
+                  <button
+                    className="attachment-thumb block w-full overflow-hidden border-b border-[color:var(--app-border-soft)] bg-[color:var(--app-surface-muted)]"
+                    onClick={() => setViewerFileName(item.originalFileName)}
+                    title="View original image"
+                    aria-label={`View ${item.fileName}`}
+                  >
+                    <AttachmentPreviewImage fileName={item.fileName} alt={item.fileName} className="h-full w-full object-cover" />
+                  </button>
+                  <div className="p-3">
+                    <div className="truncate text-sm font-medium text-slate-900" title={item.fileName}>{item.fileName}</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {formatBytes(item.size)} · {formatAttachmentTime(item.modifiedAt)}
+                    </div>
+                    <div className="mt-2 truncate text-xs text-slate-500">
+                      {usageCount > 0 ? `${usageCount} reference${usageCount === 1 ? '' : 's'}` : 'Not referenced'}
+                    </div>
                   </div>
                 </div>
-                <div className="flex shrink-0 gap-2">
-                  <button className="secondary-button" onClick={() => copyReference(item.fileName)}>
-                    <Copy className="h-4 w-4" />
-                    Copy
-                  </button>
-                  <button className="secondary-button text-red-700 hover:bg-red-50" onClick={() => removeAttachment(item.fileName)}>
-                    <Trash2 className="h-4 w-4" />
-                    Delete
-                  </button>
-                </div>
-              </div>
-            );
-          })
+              );
+            })}
+          </div>
         )}
       </div>
       {viewerFileName ? (
@@ -2422,9 +2643,9 @@ function SearchResultsPage({ query }: { query: string }) {
     <Page title="Search" subtitle={normalizedQuery ? `Results for "${query}"` : 'Type to search notes and ToDos'}>
       <div className="mx-auto w-full max-w-4xl space-y-5">
         {!normalizedQuery ? (
-          <EmptyMessage title="Search your notes" message="Type in the search box to see matching notes, entries, and ToDos." />
+          <EmptyMessage title="Search your notes" message="Type in the search box to see matching notes, entries, and ToDos." icon={Search} />
         ) : results.length === 0 ? (
-          <EmptyMessage title="No matches" message="Try searching by note title, entry content, or ToDo text." />
+          <EmptyMessage title="No matches" message="Try searching by note title, entry content, or ToDo text." icon={Search} />
         ) : null}
 
         {results.length > 0 ? (
@@ -2434,7 +2655,7 @@ function SearchResultsPage({ query }: { query: string }) {
               {results.map((item) => (
                 <button
                   key={item.noteId}
-                  className="surface-card surface-card-hover w-full rounded-lg border p-4 text-left"
+                  className="content-card content-card-hover w-full rounded-lg p-4 text-left"
                   onClick={() => {
                     setQuery('');
                     selectNote(item.noteId);
@@ -2463,7 +2684,7 @@ function SettingsPage() {
       <div className="mx-auto w-full max-w-2xl space-y-4">
         <StorageSettings />
         <BackupSettings />
-        <div className="surface-card rounded-lg border p-5">
+        <div className="content-card rounded-lg p-5">
           <div className="flex items-center gap-2 font-medium">
             <Moon className="h-4 w-4" />
             Theme
@@ -2497,7 +2718,7 @@ function SettingsPage() {
             })}
           </div>
         </div>
-        <div className="surface-card rounded-lg border p-5">
+        <div className="content-card rounded-lg p-5">
           <div className="flex items-center gap-2 font-medium">
             <Keyboard className="h-4 w-4" />
             Keyboard shortcuts
@@ -2565,7 +2786,7 @@ function BackupSettings() {
   }, [replaceAppState]);
 
   return (
-    <div className="surface-card rounded-lg border p-5">
+    <div className="content-card rounded-lg p-5">
       <div className="flex items-center gap-2 font-medium">
         <Upload className="h-4 w-4" />
         Backup
@@ -2665,7 +2886,7 @@ function StorageSettings() {
   };
 
   return (
-    <div className="surface-card rounded-lg border p-5">
+    <div className="content-card rounded-lg p-5">
       <div className="flex items-center gap-2 font-medium">
         <Database className="h-4 w-4" />
         Local storage
@@ -2681,7 +2902,7 @@ function StorageSettings() {
                 disabled={isPicking || isSaving}
                 onClick={choosePath}
                 placeholder={storageInfo?.defaultPath ?? 'Default app data folder'}
-                className="h-10 w-full cursor-pointer rounded-md border border-slate-200 bg-white px-3 pr-20 font-mono text-sm outline-none ring-blue-200 focus:ring-2"
+                className="h-10 w-full cursor-pointer rounded-md border border-[color:var(--app-border)] bg-[color:var(--app-surface)] px-3 pr-20 font-mono text-sm outline-none focus:ring-2 focus:ring-[color:var(--app-focus-ring)]"
               />
               <button
                 type="button"
@@ -2721,7 +2942,7 @@ function StorageSettings() {
 function HelpPage() {
   return (
     <Page title="Help" subtitle="Minimum usage guide">
-      <div className="surface-card mx-auto w-full max-w-2xl rounded-lg border p-5">
+      <div className="content-card mx-auto w-full max-w-2xl rounded-lg p-5">
         <div className="font-medium">Markdown ToDo</div>
         <pre className="mt-3 rounded-md bg-slate-950 p-4 text-sm text-slate-50">{'- [ ] incomplete task\n- [x] completed task'}</pre>
         <div className="mt-5 font-medium">Images</div>
@@ -2794,9 +3015,9 @@ function ShortcutInput({
 
 function Page({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="app-page flex min-h-0 flex-1 flex-col">
       <PageHeader title={title} subtitle={subtitle} />
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">{children}</div>
     </div>
   );
 }
@@ -2811,8 +3032,8 @@ function PageHeader({
   children?: React.ReactNode;
 }) {
   return (
-    <header className="border-b border-slate-200 bg-slate-50 px-6 py-4">
-      {children ?? <h1 className="text-base font-semibold">{title}</h1>}
+    <header className="app-page-header border-b px-6 py-4">
+      {children ?? <h1 className="text-lg font-semibold tracking-normal text-slate-950">{title}</h1>}
       {subtitle ? <p className="mt-1 text-xs text-slate-500">{subtitle}</p> : null}
     </header>
   );
@@ -2977,11 +3198,32 @@ function attachmentFallbackCandidates(fileName?: string, fallbackFileName?: stri
   return Array.from(new Set(candidates));
 }
 
-function EmptyMessage({ title, message }: { title: string; message: string }) {
+function EmptyMessage({
+  title,
+  message,
+  icon: Icon = NotebookText,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  message: string;
+  icon?: React.ComponentType<{ className?: string }>;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
   return (
-    <div className="rounded-lg border border-dashed border-blue-200 bg-white p-8 text-center">
-      <div className="font-medium">{title}</div>
+    <div className="empty-state rounded-lg p-8 text-center">
+      <div className="empty-state-icon mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg">
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="font-medium text-slate-900">{title}</div>
       <div className="mt-1 text-sm text-slate-500">{message}</div>
+      {actionLabel && onAction ? (
+        <button type="button" className="primary-button mt-5" onClick={onAction}>
+          <FilePenLine className="h-4 w-4" />
+          {actionLabel}
+        </button>
+      ) : null}
     </div>
   );
 }
