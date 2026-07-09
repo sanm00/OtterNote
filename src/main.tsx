@@ -380,7 +380,7 @@ function Sidebar() {
                   }
                 }}
               >
-                <Icon className={`h-4 w-4 ${active ? '' : 'text-slate-400'}`} />
+                <Icon className={`h-4 w-4 ${active ? '' : 'text-slate-500'}`} />
                 {item.label}
               </button>
             );
