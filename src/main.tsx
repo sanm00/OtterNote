@@ -34,6 +34,7 @@ import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import './styles.css';
 import { createId } from './id';
+import { updateTodoStatusInEntryContent } from './todo-parser';
 import {
   defaultShortcuts,
   snapshotAppState,
@@ -244,28 +245,16 @@ function Sidebar() {
   const query = useAppStore((state) => state.query);
   const setQuery = useAppStore((state) => state.setQuery);
   const notes = useAppStore((state) => state.notes);
-  const recentNoteIds = useAppStore((state) => state.recentNoteIds);
   const selectedNoteId = useAppStore((state) => state.selectedNoteId);
   const selectNote = useAppStore((state) => state.selectNote);
   const shortcuts = useAppStore((state) => state.shortcuts);
   const logoSrc = theme === 'dark' ? '/app-logo-dark.png' : '/app-logo.png';
   const newShortcutLabel = normalizeShortcutLabel((shortcuts?.new ?? defaultShortcuts.new) || '');
 
-  const recentNotes = React.useMemo(() => {
-    const recent = recentNoteIds
-      .map((id) => notes.find((note) => note.id === id))
-      .filter((note): note is NonNullable<typeof note> => Boolean(note));
-    if (recent.length >= 10) {
-      return recent.slice(0, 10);
-    }
-
-    const recentIds = new Set(recent.map((note) => note.id));
-    const fallback = [...notes]
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .filter((note) => !recentIds.has(note.id));
-
-    return [...recent, ...fallback].slice(0, 10);
-  }, [notes, recentNoteIds]);
+  const recentNotes = React.useMemo(
+    () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 10),
+    [notes],
+  );
 
   return (
     <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r">
@@ -691,6 +680,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
   const [draftEntryId, setDraftEntryId] = React.useState<string | null>(null);
   const [draftContent, setDraftContent] = React.useState('');
   const [status, setStatus] = React.useState('');
+  const [showDeleteConfirmation, setShowDeleteConfirmation] = React.useState(false);
   const editorViewRef = React.useRef<EditorView | null>(null);
   const entries = React.useMemo(() => {
     if (bundle) {
@@ -746,9 +736,13 @@ function NoteDetail({ noteId }: { noteId: string }) {
 
   const deleteCurrentNote = React.useCallback(() => {
     if (!note) return;
-    if (window.confirm('Delete this note and its ToDo items?')) {
-      deleteNote(note.id);
-    }
+    setShowDeleteConfirmation(true);
+  }, [note]);
+
+  const confirmNoteDeletion = React.useCallback(() => {
+    if (!note) return;
+    deleteNote(note.id);
+    setShowDeleteConfirmation(false);
   }, [deleteNote, note]);
 
   const exportCurrentNote = React.useCallback(async () => {
@@ -946,6 +940,26 @@ function NoteDetail({ noteId }: { noteId: string }) {
           )}
         </div>
       </div>
+      {showDeleteConfirmation ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-6" role="presentation">
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="delete-note-title">
+            <h2 id="delete-note-title" className="text-base font-semibold text-slate-950">
+              Delete this note?
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              The note and all of its ToDo items will be deleted. This action cannot be undone.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" className="secondary-button" onClick={() => setShowDeleteConfirmation(false)}>
+                Cancel
+              </button>
+              <button type="button" className="primary-button bg-red-600 hover:bg-red-700" onClick={confirmNoteDeletion}>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1079,6 +1093,12 @@ function PinnedNewNoteWindow() {
     void saveDraft('auto');
   }, [saveDraft]);
 
+  const togglePreviewTodo = React.useCallback((occurrenceIndex: number, done: boolean) => {
+    const nextDraft = updateTodoStatusInEntryContent(draft, occurrenceIndex, done ? 'done' : 'todo');
+    updateDraft(nextDraft);
+    void saveDraftContent(nextDraft, titleFromFirstLine(nextDraft), 'auto');
+  }, [draft, saveDraftContent, updateDraft]);
+
   const insertPinnedImage = React.useCallback(async (payload: ClipboardImagePayload, view: EditorView | null) => {
     isInsertingImageRef.current = true;
     try {
@@ -1209,6 +1229,7 @@ function PinnedNewNoteWindow() {
             content={draft}
             emptyMessage="双击开始记录"
             onDoubleClick={() => void startEditing()}
+            onTodoToggle={togglePreviewTodo}
           />
         )}
       </main>
@@ -1251,32 +1272,51 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
     };
   }, []);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const content = await readNoteBundle(noteId);
-        if (!cancelled && content) {
-          setBundle(JSON.parse(content) as NoteBundleData);
-          setLoadFailed(false);
-          return;
-        }
-      } catch {
-        // Fall back to hydrated store state below.
+  const refreshLatestNote = React.useCallback(async () => {
+    try {
+      const content = await readNoteBundle(noteId);
+      if (content) {
+        const nextBundle = JSON.parse(content) as NoteBundleData;
+        const firstEntry = nextBundle.entries[0];
+        const nextTitle = displayTitle(nextBundle.note.title);
+        const nextContent = firstEntry?.content ?? '';
+        setBundle(nextBundle);
+        setDraftTitle(nextTitle);
+        setDraftEntryId(firstEntry?.id ?? null);
+        setDraftContent(nextContent);
+        lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+        initializedRef.current = true;
+        setLoadFailed(false);
+        return;
       }
+    } catch {
+      // Fall back to the hydrated store state below.
+    }
 
-      if (!cancelled) {
-        setBundle(null);
-        const hasStoreNote = useAppStore.getState().notes.some((item) => item.id === noteId);
-        setLoadFailed(!hasStoreNote);
-      }
-    };
+    const state = useAppStore.getState();
+    const nextNote = state.notes.find((item) => item.id === noteId);
+    if (!nextNote) {
+      setLoadFailed(true);
+      return;
+    }
 
-    void load();
-    return () => {
-      cancelled = true;
-    };
+    const firstEntry = state.entries.find((entry) => entry.noteId === noteId);
+    const nextTitle = displayTitle(nextNote.title);
+    const nextContent = firstEntry?.content ?? '';
+    setBundle(null);
+    setDraftTitle(nextTitle);
+    setDraftEntryId(firstEntry?.id ?? null);
+    setDraftContent(nextContent);
+    lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+    initializedRef.current = true;
+    setLoadFailed(false);
   }, [noteId]);
+
+  React.useEffect(() => {
+    void refreshLatestNote();
+    window.addEventListener('focus', refreshLatestNote);
+    return () => window.removeEventListener('focus', refreshLatestNote);
+  }, [refreshLatestNote]);
 
   React.useEffect(() => {
     if (initializedRef.current) {
@@ -1375,6 +1415,16 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
     editorViewRef.current = null;
     void saveDraft('auto');
   }, [saveDraft]);
+
+  const togglePreviewTodo = React.useCallback((occurrenceIndex: number, done: boolean) => {
+    const nextDraftContent = updateTodoStatusInEntryContent(
+      draftContent,
+      occurrenceIndex,
+      done ? 'done' : 'todo',
+    );
+    setDraftContent(nextDraftContent);
+    void saveDraftContent(nextDraftContent, draftTitle, 'auto');
+  }, [draftContent, draftTitle, saveDraftContent]);
 
   const insertPinnedImage = React.useCallback(async (payload: ClipboardImagePayload, view: EditorView | null) => {
     isInsertingImageRef.current = true;
@@ -1494,6 +1544,7 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
             content={draftContent}
             emptyMessage="双击编辑内容"
             onDoubleClick={() => void startEditing()}
+            onTodoToggle={togglePreviewTodo}
           />
         ) : (
           <div className="pinned-editor-shell min-h-full">
@@ -1528,15 +1579,30 @@ function PinnedNotePreview({
   content,
   emptyMessage,
   onDoubleClick,
+  onTodoToggle,
 }: {
   content: string;
   emptyMessage: string;
   onDoubleClick: () => void;
+  onTodoToggle?: (occurrenceIndex: number, done: boolean) => void;
 }) {
+  const handleTodoChange = React.useCallback((event: React.ChangeEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!onTodoToggle || !(target instanceof HTMLInputElement) || target.type !== 'checkbox') {
+      return;
+    }
+
+    const checkboxes = Array.from(event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+    const occurrenceIndex = checkboxes.indexOf(target);
+    if (occurrenceIndex >= 0) {
+      onTodoToggle(occurrenceIndex, target.checked);
+    }
+  }, [onTodoToggle]);
+
   return (
-    <div className="pinned-note-preview min-h-full" onDoubleClick={onDoubleClick}>
+    <div className="pinned-note-preview min-h-full" onChange={handleTodoChange} onDoubleClick={onDoubleClick}>
       {content.trim() ? (
-        <MarkdownContent content={content} />
+        <MarkdownContent content={content} enableTaskCheckboxes={Boolean(onTodoToggle)} />
       ) : (
         <div className="pinned-note-empty">{emptyMessage}</div>
       )}
@@ -2378,6 +2444,12 @@ function TodosPage() {
     [selectNote],
   );
 
+  const removeTodo = React.useCallback((todoId: string) => {
+    if (confirmDeletion('Delete this ToDo item?')) {
+      deleteTodo(todoId);
+    }
+  }, [deleteTodo]);
+
   return (
     <Page title="ToDos" subtitle="Tasks extracted from notes">
       <div className="mx-auto w-full max-w-3xl space-y-2">
@@ -2416,7 +2488,7 @@ function TodosPage() {
                 </button>
                 <button
                   className="rounded-md p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                  onClick={() => deleteTodo(todo.id)}
+                  onClick={() => removeTodo(todo.id)}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -2495,7 +2567,7 @@ function ImagesPage() {
         count > 0
           ? `Delete ${fileName}? It is still referenced in ${count} place(s).`
           : `Delete ${fileName}?`;
-      if (!window.confirm(confirmMessage)) {
+      if (!confirmDeletion(confirmMessage)) {
         return;
       }
 
@@ -3039,13 +3111,22 @@ function PageHeader({
   );
 }
 
-function MarkdownContent({ content }: { content: string }) {
+function MarkdownContent({ content, enableTaskCheckboxes = false }: { content: string; enableTaskCheckboxes?: boolean }) {
+  const components = enableTaskCheckboxes
+    ? {
+        img: MarkdownImageElement,
+        input: ({ node: _node, disabled: _disabled, ...props }: React.ComponentProps<'input'> & { node?: unknown }) => (
+          <input {...props} disabled={false} />
+        ),
+      }
+    : { img: MarkdownImageElement };
+
   return (
     <div className="markdown-content">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         urlTransform={markdownUrlTransform}
-        components={{ img: MarkdownImageElement }}
+        components={components}
       >
         {content}
       </ReactMarkdown>
@@ -3414,6 +3495,14 @@ function shortcutHelpText(action: ShortcutAction) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function confirmDeletion(message: string) {
+  if (!window.confirm(message)) {
+    return false;
+  }
+
+  return window.prompt('This action cannot be undone. Type DELETE to confirm.') === 'DELETE';
 }
 
 function summarizeNotePreview(noteId: string, entries: ReturnType<typeof useAppStore.getState>['entries'], todos: ReturnType<typeof useAppStore.getState>['todos']) {
