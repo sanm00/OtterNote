@@ -736,6 +736,62 @@ button:disabled {
   border-color: var(--app-border-soft);
 }
 
+.todo-source-card {
+  background: var(--app-surface-muted);
+  border-color: var(--app-border);
+  box-shadow: none;
+}
+
+.todo-source-card-header:not(:disabled):hover {
+  background: var(--app-hover-surface);
+}
+
+.todo-source-card-arrow {
+  color: var(--app-text-subtle);
+}
+
+.todo-source-card-icon {
+  background: var(--app-selected-surface);
+  color: var(--app-selected-meta);
+}
+
+.todo-source-card-items {
+  position: relative;
+}
+
+.todo-source-card-items::before {
+  position: absolute;
+  top: 0;
+  right: 0.5rem;
+  left: 0.5rem;
+  content: '';
+  border-top: 1px solid #cbd5e1;
+}
+
+.todo-source-card-item:hover {
+  background: #f1f5f9;
+}
+
+.todo-delete-button {
+  opacity: 0.58;
+  transition: opacity 150ms ease;
+}
+
+.todo-source-card-item:hover .todo-delete-button,
+.todo-delete-button:focus-visible {
+  opacity: 1;
+}
+
+.todo-completed-toggle {
+  border-top: 1px solid #cbd5e1;
+  color: var(--app-text-muted);
+}
+
+.todo-completed-toggle:hover {
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+}
+
 .note-list-card {
   background: var(--app-surface-raised);
   border-color: var(--app-border-soft);
@@ -772,6 +828,21 @@ button:disabled {
 [data-theme='dark'] .todo-list-card {
   background: var(--app-surface-raised);
   border-color: var(--app-border-soft);
+}
+
+[data-theme='dark'] .todo-source-card {
+  background: var(--app-surface-muted);
+  border-color: var(--app-border);
+  box-shadow: none;
+}
+
+[data-theme='dark'] .todo-source-card-items::before,
+[data-theme='dark'] .todo-completed-toggle {
+  border-color: #475569;
+}
+
+[data-theme='dark'] .todo-source-card-item:hover {
+  background: #334155;
 }
 
 [data-theme='dark'] .note-list-card {

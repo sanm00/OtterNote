@@ -8,6 +8,8 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import {
   Download,
   CheckSquare,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   Database,
   Copy,
@@ -2432,6 +2434,35 @@ function TodosPage() {
   const deleteTodo = useAppStore((state) => state.deleteTodo);
   const notes = useAppStore((state) => state.notes);
   const selectNote = useAppStore((state) => state.selectNote);
+  const [expandedCompletedGroups, setExpandedCompletedGroups] = React.useState<Record<string, boolean>>({});
+
+  const todoGroups = React.useMemo(() => {
+    const notesById = new Map(notes.map((note) => [note.id, note]));
+    const groups = new Map<
+      string,
+      { key: string; noteId?: string; title: string; todos: typeof todos }
+    >();
+
+    todos.forEach((todo) => {
+      const key = todo.noteId ?? 'standalone';
+      const existingGroup = groups.get(key);
+
+      if (existingGroup) {
+        existingGroup.todos.push(todo);
+        return;
+      }
+
+      const note = todo.noteId ? notesById.get(todo.noteId) : undefined;
+      groups.set(key, {
+        key,
+        noteId: todo.noteId,
+        title: note ? displayTitle(note.title) : todo.noteId ? 'Deleted note' : 'Standalone tasks',
+        todos: [todo],
+      });
+    });
+
+    return [...groups.values()];
+  }, [notes, todos]);
 
   const openTodoSource = React.useCallback(
     (todo: { noteId?: string }) => {
@@ -2450,49 +2481,82 @@ function TodosPage() {
     }
   }, [deleteTodo]);
 
+  const toggleCompletedGroup = React.useCallback((groupKey: string) => {
+    setExpandedCompletedGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
+  }, []);
+
   return (
     <Page title="ToDos" subtitle="Tasks extracted from notes">
       <div className="mx-auto w-full max-w-3xl space-y-2">
         {todos.length === 0 ? (
           <EmptyMessage title="No ToDo items" message="Add - [ ] inside a note entry." icon={CheckSquare} />
         ) : (
-          todos.map((todo) => {
-            const source = notes.find((note) => note.id === todo.noteId)?.title ?? 'Standalone';
+          todoGroups.map((group) => {
+            const activeTodos = group.todos.filter((todo) => todo.status !== 'done');
+            const completedTodos = group.todos.filter((todo) => todo.status === 'done');
+            const completedCount = completedTodos.length;
+            const showCompleted = completedCount > 0 && (activeTodos.length === 0 || expandedCompletedGroups[group.key]);
+            const visibleTodos = showCompleted ? [...activeTodos, ...completedTodos] : activeTodos;
             return (
-              <div key={todo.id} className="todo-list-card content-card content-card-hover flex items-center gap-3 rounded-lg p-4">
-                <input
-                  type="checkbox"
-                  checked={todo.status === 'done'}
-                  onChange={(event) => toggleTodo(todo.id, event.target.checked)}
-                  className="shrink-0"
-                />
+              <section key={group.key} className="todo-source-card content-card overflow-hidden rounded-xl">
                 <button
                   type="button"
-                  className="min-w-0 flex-1 text-left"
-                  onClick={() => openTodoSource(todo)}
-                  disabled={!todo.noteId}
+                  className="todo-source-card-header flex w-full items-center gap-3 px-4 py-3 text-left"
+                  onClick={() => openTodoSource(group)}
+                  disabled={!group.noteId}
                 >
-                  <div
-                    className={`text-sm font-medium ${
-                      todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-900'
-                    }`}
+                  <span className="todo-source-card-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
+                    <NotebookText className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-sm font-semibold text-slate-900">{group.title}</span>
+                      {group.noteId ? <ChevronRight className="todo-source-card-arrow h-3.5 w-3.5 shrink-0" /> : null}
+                    </span>
+                    <span className="mt-0.5 block text-xs text-slate-500">
+                      {group.noteId ? 'Source note' : 'Personal task'} · {completedCount}/{group.todos.length} completed
+                    </span>
+                  </span>
+                  <span className="note-todo-count rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                    {group.todos.length}
+                  </span>
+                </button>
+                <div className="todo-source-card-items space-y-1 p-2" aria-label={`${completedCount} of ${group.todos.length} tasks completed`}>
+                  {visibleTodos.map((todo) => (
+                    <div key={todo.id} className="todo-source-card-item flex items-start gap-3 rounded-md px-2 py-2">
+                      <input
+                        type="checkbox"
+                        checked={todo.status === 'done'}
+                        onChange={(event) => toggleTodo(todo.id, event.target.checked)}
+                        className="mt-0.5 shrink-0"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className={`text-sm font-medium ${todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                          {todo.title}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="todo-delete-button rounded-md p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                        aria-label={`Delete ${todo.title}`}
+                        onClick={() => removeTodo(todo.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {completedTodos.length > 0 && activeTodos.length > 0 ? (
+                  <button
+                    type="button"
+                    className="todo-completed-toggle flex w-full items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-medium"
+                    onClick={() => toggleCompletedGroup(group.key)}
                   >
-                    {todo.title}
-                  </div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    Created {formatDate(todo.createdAt)}
-                    <span className="mx-1 text-slate-300">·</span>
-                    {todo.noteId ? 'Source note: ' : 'Source: '}
-                    <span className={todo.noteId ? 'font-medium text-slate-700 hover:text-slate-900' : ''}>{source}</span>
-                  </div>
-                </button>
-                <button
-                  className="rounded-md p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                  onClick={() => removeTodo(todo.id)}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
+                    <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showCompleted ? 'rotate-180' : ''}`} />
+                    {showCompleted ? 'Hide completed tasks' : `Show ${completedTodos.length} completed task${completedTodos.length === 1 ? '' : 's'}`}
+                  </button>
+                ) : null}
+              </section>
             );
           })
         )}
