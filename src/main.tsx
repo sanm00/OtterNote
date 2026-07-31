@@ -2663,12 +2663,26 @@ function ImagesPage() {
         ) : attachments.length === 0 ? (
           <EmptyMessage title="No uploaded images" message="Use the image button or paste an image into a note." icon={ImageIcon} />
         ) : (
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+          <div className="space-y-2">
             {attachments.map((item) => {
               const usageCount = attachmentUsage.get(item.fileName) ?? 0;
               return (
-                <div key={item.fileName} className="attachment-card content-card overflow-hidden rounded-lg">
-                  <div className="attachment-actions">
+                <div key={item.fileName} className="content-card flex items-center gap-3 rounded-lg px-3 py-2">
+                  <button
+                    className="flex-none h-11 w-11 overflow-hidden rounded-md"
+                    onClick={() => setViewerFileName(item.originalFileName)}
+                    title="View original image"
+                    aria-label={`View ${item.fileName}`}
+                  >
+                    <AttachmentPreviewImage fileName={item.fileName} alt={item.fileName} className="h-full w-full object-cover" />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-slate-900" title={item.fileName}>{item.fileName}</div>
+                    <div className="mt-0.5 truncate text-xs text-slate-500">
+                      {formatBytes(item.size)} · {formatAttachmentTime(item.modifiedAt)} · {usageCount > 0 ? `${usageCount} reference${usageCount === 1 ? '' : 's'}` : 'Not referenced'}
+                    </div>
+                  </div>
+                  <div className="flex flex-none items-center gap-1">
                     <button
                       className="icon-button h-8 w-8"
                       onClick={() => copyReference(item.fileName)}
@@ -2685,23 +2699,6 @@ function ImagesPage() {
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
-                  </div>
-                  <button
-                    className="attachment-thumb block w-full overflow-hidden border-b border-[color:var(--app-border-soft)] bg-[color:var(--app-surface-muted)]"
-                    onClick={() => setViewerFileName(item.originalFileName)}
-                    title="View original image"
-                    aria-label={`View ${item.fileName}`}
-                  >
-                    <AttachmentPreviewImage fileName={item.fileName} alt={item.fileName} className="h-full w-full object-cover" />
-                  </button>
-                  <div className="p-3">
-                    <div className="truncate text-sm font-medium text-slate-900" title={item.fileName}>{item.fileName}</div>
-                    <div className="mt-1 text-xs text-slate-500">
-                      {formatBytes(item.size)} · {formatAttachmentTime(item.modifiedAt)}
-                    </div>
-                    <div className="mt-2 truncate text-xs text-slate-500">
-                      {usageCount > 0 ? `${usageCount} reference${usageCount === 1 ? '' : 's'}` : 'Not referenced'}
-                    </div>
                   </div>
                 </div>
               );

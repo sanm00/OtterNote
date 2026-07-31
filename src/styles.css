@@ -551,41 +551,6 @@ button:disabled {
   color: var(--app-text-muted);
 }
 
-.attachment-card {
-  min-width: 0;
-  position: relative;
-}
-
-.attachment-thumb {
-  aspect-ratio: 4 / 3;
-}
-
-.attachment-actions {
-  position: absolute;
-  right: 8px;
-  top: 8px;
-  z-index: 2;
-  display: flex;
-  gap: 6px;
-  opacity: 0;
-  transform: translateY(-2px);
-  transition:
-    opacity 140ms ease,
-    transform 140ms ease;
-}
-
-.attachment-card:hover .attachment-actions,
-.attachment-card:focus-within .attachment-actions {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.attachment-actions .icon-button {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-}
-
 .pinned-note-window {
   position: relative;
   background: rgba(236, 253, 245, 0.75);
