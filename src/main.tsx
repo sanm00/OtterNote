@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { EditorView } from '@codemirror/view';
 import { emit, listen } from '@tauri-apps/api/event';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog, save as saveDialog, ask as askDialog } from '@tauri-apps/plugin-dialog';
 import {
   Download,
   CheckSquare,
@@ -2475,8 +2475,8 @@ function TodosPage() {
     [selectNote],
   );
 
-  const removeTodo = React.useCallback((todoId: string) => {
-    if (confirmDeletion('Delete this ToDo item?')) {
+  const removeTodo = React.useCallback(async (todoId: string) => {
+    if (await confirmDeletion('Delete this ToDo item?')) {
       deleteTodo(todoId);
     }
   }, [deleteTodo]);
@@ -2631,7 +2631,7 @@ function ImagesPage() {
         count > 0
           ? `Delete ${fileName}? It is still referenced in ${count} place(s).`
           : `Delete ${fileName}?`;
-      if (!confirmDeletion(confirmMessage)) {
+      if (!(await confirmDeletion(confirmMessage))) {
         return;
       }
 
@@ -3561,12 +3561,17 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function confirmDeletion(message: string) {
-  if (!window.confirm(message)) {
-    return false;
+async function confirmDeletion(message: string) {
+  if (!isTauriRuntime()) {
+    return window.confirm(message);
   }
 
-  return window.prompt('This action cannot be undone. Type DELETE to confirm.') === 'DELETE';
+  return askDialog(message, {
+    title: 'Confirm deletion',
+    kind: 'warning',
+    okLabel: 'Delete',
+    cancelLabel: 'Cancel',
+  });
 }
 
 function summarizeNotePreview(noteId: string, entries: ReturnType<typeof useAppStore.getState>['entries'], todos: ReturnType<typeof useAppStore.getState>['todos']) {
