@@ -521,12 +521,15 @@ export const useAppStore = create<AppState>()(
     {
       name: 'otter-note-store',
       storage: createJSONStorage(() => appStorage),
+      partialize: ({ activeSection: _activeSection, query: _query, searchFocused: _searchFocused, ...state }) => state,
       merge: (persistedState, currentState) => ({
         ...currentState,
         ...(() => {
           const {
             activities: _activities,
             activeSection: _activeSection,
+            query: _query,
+            searchFocused: _searchFocused,
             ...rest
           } = persistedState as Partial<AppState> & { activities?: unknown };
           return rest;

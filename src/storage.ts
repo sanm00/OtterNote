@@ -20,18 +20,93 @@ type TauriWindow = Window & {
 };
 
 const browserStorageKey = 'otter-note-store';
+let lastPersistedAppState: string | null | undefined;
+let lastScheduledAppState: string | null | undefined;
+let pendingAppStateWrite: { name: string; value: string } | null = null;
+let appStateWriteLoop: Promise<void> | null = null;
+let appStateHydrated = false;
 
 export const isTauriRuntime = () =>
   typeof window !== 'undefined' && Boolean((window as TauriWindow).__TAURI_INTERNALS__);
 
+function rememberPersistedAppState(value: string | null) {
+  lastPersistedAppState = value;
+  lastScheduledAppState = value;
+  appStateHydrated = true;
+}
+
+function queueAppStateWrite(name: string, value: string) {
+  // Zustand may update transient UI state while its asynchronous desktop
+  // storage is still hydrating. Never let that default snapshot overwrite the
+  // on-disk state before getItem has completed.
+  if (!appStateHydrated) {
+    return Promise.resolve();
+  }
+
+  if (value === lastPersistedAppState && !pendingAppStateWrite && !appStateWriteLoop) {
+    return Promise.resolve();
+  }
+
+  if (value !== lastScheduledAppState) {
+    lastScheduledAppState = value;
+    // Replacing the pending snapshot intentionally drops intermediate states;
+    // the in-flight write completes, then only the newest snapshot is stored.
+    pendingAppStateWrite = { name, value };
+  }
+
+  if (!appStateWriteLoop) {
+    const loop = (async () => {
+      let latestError: unknown;
+      while (pendingAppStateWrite) {
+        const next = pendingAppStateWrite;
+        pendingAppStateWrite = null;
+        try {
+          if (next.value !== lastPersistedAppState) {
+            if (isTauriRuntime()) {
+              await invoke('write_app_state', { value: next.value });
+            } else {
+              window.localStorage.setItem(next.name || browserStorageKey, next.value);
+            }
+            lastPersistedAppState = next.value;
+          }
+          latestError = undefined;
+        } catch (error) {
+          latestError = error;
+        }
+      }
+
+      if (latestError) {
+        throw latestError;
+      }
+    })();
+    appStateWriteLoop = loop;
+    void loop.then(
+      () => {
+        if (appStateWriteLoop === loop) appStateWriteLoop = null;
+      },
+      () => {
+        if (appStateWriteLoop === loop) {
+          appStateWriteLoop = null;
+          lastScheduledAppState = lastPersistedAppState;
+        }
+      },
+    );
+  }
+
+  return appStateWriteLoop;
+}
+
 export const appStorage: StateStorage = {
   async getItem(name) {
     if (!isTauriRuntime()) {
-      return window.localStorage.getItem(name);
+      const value = window.localStorage.getItem(name || browserStorageKey);
+      rememberPersistedAppState(value);
+      return value;
     }
 
     const fileValue = await invoke<string | null>('read_app_state');
     if (fileValue) {
+      rememberPersistedAppState(fileValue);
       return fileValue;
     }
 
@@ -40,15 +115,11 @@ export const appStorage: StateStorage = {
       await invoke('write_app_state', { value: legacyValue });
     }
 
+    rememberPersistedAppState(legacyValue);
     return legacyValue;
   },
-  async setItem(name, value) {
-    if (!isTauriRuntime()) {
-      window.localStorage.setItem(name || browserStorageKey, value);
-      return;
-    }
-
-    await invoke('write_app_state', { value });
+  setItem(name, value) {
+    return queueAppStateWrite(name, value);
   },
   async removeItem(name) {
     if (!isTauriRuntime()) {

@@ -78,6 +78,9 @@ if ((import.meta as ImportMeta & { hot?: unknown }).hot && typeof window !== 'un
 }
 
 const PINNED_NOTE_AUTOSAVE_DELAY_MS = 5_000;
+const SIDEBAR_NOTES_PAGE_SIZE = 20;
+const SEARCH_DEBOUNCE_DELAY_MS = 180;
+const NOTE_TITLE_SAVE_DELAY_MS = 500;
 
 const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'notes', label: 'Notes', icon: NotebookText },
@@ -240,7 +243,6 @@ function useKeyboardShortcuts() {
 
 function Sidebar() {
   const activeSection = useAppStore((state) => state.activeSection);
-  const theme = useAppStore((state) => state.theme);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
   const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   const setSearchFocused = useAppStore((state) => state.setSearchFocused);
@@ -250,13 +252,23 @@ function Sidebar() {
   const selectedNoteId = useAppStore((state) => state.selectedNoteId);
   const selectNote = useAppStore((state) => state.selectNote);
   const shortcuts = useAppStore((state) => state.shortcuts);
-  const logoSrc = theme === 'dark' ? '/app-logo-dark.png' : '/app-logo.png';
+  const [visibleNoteCount, setVisibleNoteCount] = React.useState(SIDEBAR_NOTES_PAGE_SIZE);
+  const logoSrc = '/app-logo-transparent.png';
   const newShortcutLabel = normalizeShortcutLabel((shortcuts?.new ?? defaultShortcuts.new) || '');
 
-  const recentNotes = React.useMemo(
-    () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 10),
+  const sortedNotes = React.useMemo(
+    () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [notes],
   );
+  const visibleNotes = sortedNotes.slice(0, visibleNoteCount);
+
+  const loadMoreNotes = (event: React.UIEvent<HTMLDivElement>) => {
+    const list = event.currentTarget;
+    const isNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight <= 48;
+    if (!isNearBottom || visibleNoteCount >= sortedNotes.length) return;
+
+    setVisibleNoteCount((count) => Math.min(count + SIDEBAR_NOTES_PAGE_SIZE, sortedNotes.length));
+  };
 
   return (
     <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r">
@@ -267,7 +279,7 @@ function Sidebar() {
               type="button"
               className="flex min-w-0 items-center gap-3 text-left"
               onClick={() => {
-                const latest = recentNotes[0];
+                const latest = sortedNotes[0];
                 if (latest) {
                   selectNote(latest.id);
                   return;
@@ -277,7 +289,7 @@ function Sidebar() {
                 setActiveSection('new');
               }}
             >
-              <span className="sidebar-brand-mark flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden">
                 <img
                   src={logoSrc}
                   alt=""
@@ -325,14 +337,17 @@ function Sidebar() {
       </div>
 
       <section className="flex min-h-0 flex-1 flex-col px-3 pt-1">
-        <div className="sidebar-section-label mb-1 px-1 text-[11px] font-medium text-slate-500">Recent</div>
-        {recentNotes.length === 0 ? (
+        <div className="sidebar-section-label mb-1 flex items-center justify-between px-1 text-[11px] font-medium text-slate-500">
+          <span>Notes</span>
+          <span aria-label={`${sortedNotes.length} notes`}>{sortedNotes.length}</span>
+        </div>
+        {sortedNotes.length === 0 ? (
           <p className="sidebar-empty-note">
-            No recently opened notes.
+            No notes yet.
           </p>
         ) : (
-          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1">
-            {recentNotes.map((note) => (
+          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1" onScroll={loadMoreNotes}>
+            {visibleNotes.map((note) => (
               <button
                 key={note.id}
                 className={`sidebar-item w-full rounded-md py-1.5 pl-4 pr-3 text-left text-[13px] leading-5 ${
@@ -678,6 +693,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
   const addEntry = useAppStore((state) => state.addEntry);
   const deleteNote = useAppStore((state) => state.deleteNote);
   const [bundle, setBundle] = React.useState<NoteBundleData | null>(null);
+  const [titleDraft, setTitleDraft] = React.useState(note?.title ?? '');
   const [isEditing, setIsEditing] = React.useState(false);
   const [draftEntryId, setDraftEntryId] = React.useState<string | null>(null);
   const [draftContent, setDraftContent] = React.useState('');
@@ -700,6 +716,21 @@ function NoteDetail({ noteId }: { noteId: string }) {
   }, [draftEntryId, entries, isEditing]);
   const hasUnsavedEntryChanges = isEditing && draftContent !== originalDraftContent;
   const canSaveDraft = isEditing && draftContent.trim().length > 0 && hasUnsavedEntryChanges;
+
+  React.useEffect(() => {
+    setTitleDraft(note?.title ?? '');
+  }, [noteId]);
+
+  const saveTitleDraft = React.useCallback(() => {
+    if (!note || titleDraft === note.title) return;
+    updateNoteTitle(note.id, titleDraft);
+  }, [note, titleDraft, updateNoteTitle]);
+
+  React.useEffect(() => {
+    if (!note || titleDraft === note.title) return;
+    const timeout = window.setTimeout(saveTitleDraft, NOTE_TITLE_SAVE_DELAY_MS);
+    return () => window.clearTimeout(timeout);
+  }, [note, saveTitleDraft, titleDraft]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -874,11 +905,13 @@ function NoteDetail({ noteId }: { noteId: string }) {
         titleInput={(
           <div className="flex items-center gap-3">
           <input
-            value={note.title}
-            onChange={(event) => updateNoteTitle(note.id, event.target.value)}
+            value={titleDraft}
+            onChange={(event) => setTitleDraft(event.target.value)}
+            onBlur={saveTitleDraft}
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
                 event.preventDefault();
+                saveTitleDraft();
                 if (!isEditing) {
                   startEditing();
                   window.setTimeout(() => editorViewRef.current?.focus(), 0);
@@ -2766,9 +2799,12 @@ function SearchResultsPage({ query }: { query: string }) {
       }
     };
 
-    void run();
+    const timer = window.setTimeout(() => {
+      void run();
+    }, SEARCH_DEBOUNCE_DELAY_MS);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [normalizedQuery]);
 
