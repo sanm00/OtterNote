@@ -1,0 +1,112 @@
+name: Release
+
+# Build the macOS and Linux packages for a version tag and publish them with a
+# SHA256SUMS file. scripts/install.sh (and the npm CLI that wraps it) expects
+# exactly these asset names, so keep the tag, the app version and the files in
+# sync.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS (Apple Silicon)
+            platform: macos-latest
+            target: aarch64-apple-darwin
+          - label: macOS (Intel)
+            platform: macos-latest
+            target: x86_64-apple-darwin
+          - label: Linux (x86_64)
+            platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Check that the tag matches the app version
+        run: |
+          app_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$app_version" != "$tag_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the app version $app_version"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Build the app and its bundles
+        run: npm run tauri -- build --target ${{ matrix.target }}
+        env:
+          # Passed to the bundler as well: it skips the Finder AppleScript that
+          # fails on machines without automation permission for Finder.
+          CI: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/appimage/*.AppImage
+            src-tauri/target/**/release/bundle/deb/*.deb
+
+  release:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          ls -l
+          sha256sum ./* >SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*
