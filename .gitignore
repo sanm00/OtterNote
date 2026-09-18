@@ -4,3 +4,6 @@ dist/
 *.log
 src-tauri/target/
 src-tauri/gen/
+
+# Local note data written by development builds.
+data/
