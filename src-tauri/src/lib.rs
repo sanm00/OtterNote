@@ -289,7 +289,13 @@ fn write_app_state(app: AppHandle, value: String) -> Result<(), String> {
 
 #[tauri::command]
 fn read_note_bundle(app: AppHandle, note_id: String) -> Result<Option<String>, String> {
-    let bundle_path = note_bundle_path(&active_storage_root(&app)?, &note_id);
+    if !is_valid_note_id(&note_id) {
+        return Err("Note id is invalid.".to_string());
+    }
+
+    let storage_root = active_storage_root(&app)?;
+    let bundle_path = note_bundle_path(&storage_root, &note_id);
+    ensure_inside_storage_root(&storage_root, &bundle_path)?;
     if !bundle_path.exists() && !backup_file_path(&bundle_path).exists() {
         return Ok(None);
     }
@@ -381,6 +387,7 @@ fn set_storage_path(app: AppHandle, storage_path: String) -> Result<StorageInfo,
     let old_deleted_stack = deleted_stack_file_path(&old_storage_root);
     let next_custom_path = normalize_custom_path(&storage_path);
     let config_path = storage_config_path(&app)?;
+    ensure_parent_directory(&config_path)?;
 
     write_json_file(
         &config_path,
@@ -490,6 +497,7 @@ fn read_image_attachment_bytes(app: AppHandle, file_name: String) -> Result<Vec<
     ensure_legacy_image_migration(&storage_root)?;
     let attachment_dir = images_dir_for_storage_root(&storage_root);
     let target = attachment_dir.join(&safe_name);
+    ensure_inside_storage_root(&storage_root, &target)?;
     if !target.exists() {
         restore_attachment_group_from_quarantine(
             &attachment_dir,
@@ -626,6 +634,16 @@ fn note_bundle_path(storage_root: &Path, note_id: &str) -> PathBuf {
     notes_dir_for_storage_root(storage_root).join(format!("{note_id}.json"))
 }
 
+/// Note ids are used as file names, so anything that could escape the notes
+/// directory is rejected before the path is built.
+fn is_valid_note_id(note_id: &str) -> bool {
+    !note_id.is_empty()
+        && !note_id.contains('/')
+        && !note_id.contains('\\')
+        && note_id != "."
+        && note_id != ".."
+}
+
 fn search_index_path(storage_root: &Path) -> PathBuf {
     storage_root.join(SEARCH_INDEX_FILE_NAME)
 }
@@ -658,23 +676,122 @@ fn legacy_state_file_path(app: &AppHandle) -> Result<Option<PathBuf>, String> {
 }
 
 fn active_storage_root(app: &AppHandle) -> Result<PathBuf, String> {
-    let config = read_storage_config(app)?;
-    match config.storage_path {
-        Some(path) => Ok(resolve_storage_root(&path)),
-        None => default_storage_root(app),
+    // An explicit scratch directory wins and is trusted: whoever sets it means
+    // to use exactly that path. The bootstrap config is not even read.
+    if let Some(root) = data_dir_override() {
+        return Ok(root);
     }
+
+    choose_storage_root(
+        read_storage_config(app)?.storage_path.as_deref(),
+        default_storage_root(app)?,
+        std::env::var_os("HOME").as_deref().map(Path::new),
+        cfg!(debug_assertions),
+    )
+}
+
+/// Where the notes live: the configured path if there is one, otherwise the
+/// platform default, with a debug build refused off the release data directory.
+fn choose_storage_root(
+    configured: Option<&str>,
+    default_root: PathBuf,
+    home: Option<&Path>,
+    debug_build: bool,
+) -> Result<PathBuf, String> {
+    let root = match configured {
+        Some(path) => resolve_storage_root(path),
+        None => default_root,
+    };
+
+    guard_storage_root(&root, home, debug_build)?;
+
+    Ok(root)
 }
 
 fn default_storage_root(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Some(home) = std::env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join("OtterNote"));
+    // Development builds keep their data in the "data" folder of the checkout
+    // so that running a fresh clone does not write into the user's home
+    // directory. Release builds are not affected by the working directory at
+    // all and live in ~/OtterNote.
+    #[cfg(debug_assertions)]
+    let root = {
+        let _ = app;
+        development_data_root(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .ok_or_else(|| "could not locate the project directory".to_string())?
+    };
+
+    #[cfg(not(debug_assertions))]
+    let root = match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join("OtterNote"),
+        None => app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?
+            .join("OtterNote"),
+    };
+
+    Ok(root)
+}
+
+/// Development builds store their data in `<checkout>/data`.
+///
+/// The path is derived from the crate directory at compile time instead of
+/// `std::env::current_dir()`, because a debug build started from Finder or
+/// `open` runs with `/` as its working directory, which would put the notes in
+/// `/data` (or fail to create it).
+#[cfg(debug_assertions)]
+fn development_data_root(crate_dir: &Path) -> Option<PathBuf> {
+    crate_dir.parent().map(|checkout| checkout.join("data"))
+}
+
+/// Environment variable that relocates every file the app writes into one
+/// scratch directory. Tests and development runs set it instead of pretending
+/// `HOME` points elsewhere, which is fragile because `open(1)` and Finder do not
+/// inherit the shell environment.
+const DATA_DIR_ENV: &str = "OTTERNOTE_DATA_DIR";
+
+fn data_dir_override() -> Option<PathBuf> {
+    parse_data_dir_override(std::env::var_os(DATA_DIR_ENV).as_deref())
+}
+
+/// An empty or blank value counts as unset, so a stray `export OTTERNOTE_DATA_DIR=`
+/// cannot make the app write to an empty path.
+fn parse_data_dir_override(raw: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let raw = raw?;
+    if raw.to_string_lossy().trim().is_empty() {
+        return None;
     }
 
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("OtterNote"))
+    Some(PathBuf::from(raw))
+}
+
+/// Where a release build puts its data when nothing else is configured.
+fn release_default_root_in_home(home: &Path) -> PathBuf {
+    home.join("OtterNote")
+}
+
+fn root_is_release_default(root: &Path, home: Option<&Path>) -> bool {
+    home.is_some_and(|home| root == release_default_root_in_home(home))
+}
+
+/// Keeps a debug build away from the directory that holds the user's real notes.
+///
+/// The bootstrap config lives in `app_config_dir()`, which is shared by debug and
+/// release builds, so a `storage_path` chosen in the installed app would otherwise
+/// silently redirect development runs into the live data. An explicit
+/// `OTTERNOTE_DATA_DIR` is not checked here because setting it is deliberate.
+fn guard_storage_root(root: &Path, home: Option<&Path>, debug_build: bool) -> Result<(), String> {
+    if debug_build && root_is_release_default(root, home) {
+        return Err(format!(
+            "refusing to use {} from a debug build: that is the release app's data \
+             directory. Debug builds keep their data in the checkout's data/ folder; \
+             set {}=<scratch directory> to use this path on purpose.",
+            root.display(),
+            DATA_DIR_ENV
+        ));
+    }
+
+    Ok(())
 }
 
 fn state_file_path_from_root(storage_root: &Path) -> PathBuf {
@@ -754,11 +871,30 @@ fn migrate_legacy_storage_file(app: &AppHandle, legacy_state_path: &Path) -> Res
 }
 
 fn storage_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    // The scratch directory keeps its own bootstrap config, so a sandboxed run
+    // can neither read nor overwrite the config of the installed app.
+    if let Some(root) = data_dir_override() {
+        return Ok(root.join("storage.json"));
+    }
+
     Ok(app
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?
         .join("storage.json"))
+}
+
+/// `atomic_write_bytes` does not create missing directories, and a scratch
+/// directory only exists once something has been written into it.
+fn ensure_parent_directory(path: &Path) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() || parent.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(parent).map_err(|error| error.to_string())
 }
 
 fn read_storage_config(app: &AppHandle) -> Result<StorageConfig, String> {
@@ -770,7 +906,9 @@ fn read_storage_config(app: &AppHandle) -> Result<StorageConfig, String> {
         if is_legacy_state_file_path(&expanded) {
             migrate_legacy_storage_file(app, &expanded)?;
             let default_config = StorageConfig::default();
-            write_json_file(&storage_config_path(app)?, &default_config)?;
+            let reset_path = storage_config_path(app)?;
+            ensure_parent_directory(&reset_path)?;
+            write_json_file(&reset_path, &default_config)?;
             return Ok(default_config);
         }
     }
@@ -1000,7 +1138,50 @@ fn resolve_transaction_path(storage_root: &Path, relative: &str) -> Result<PathB
     {
         return Err(format!("Unsafe transaction path: {relative}"));
     }
-    Ok(storage_root.join(path))
+    let joined = storage_root.join(path);
+    ensure_inside_storage_root(storage_root, &joined)?;
+
+    Ok(joined)
+}
+
+/// Keeps every path built from stored data inside the storage directory.
+///
+/// Names are already screened for separators and `..`, but a symbolic link planted
+/// inside the directory still redirects a read or a write somewhere else, so each
+/// component below the root is inspected. The root itself is never resolved: on
+/// macOS and Linux even a temporary directory legitimately lives behind a symlink,
+/// and users are free to keep their notes where the link points.
+fn ensure_inside_storage_root(storage_root: &Path, path: &Path) -> Result<(), String> {
+    let relative = path.strip_prefix(storage_root).map_err(|_| {
+        format!(
+            "Refusing to use {} because it is outside the storage directory.",
+            path.display()
+        )
+    })?;
+
+    let mut current = storage_root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(format!(
+                "Refusing to use {} because it is not a plain path.",
+                path.display()
+            ));
+        };
+        current.push(name);
+
+        // A missing component is fine: it is the file about to be created.
+        let is_link = fs::symlink_metadata(&current)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_link {
+            return Err(format!(
+                "Symbolic links are not supported inside the storage directory: {}",
+                current.display()
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn file_needs_write(path: &Path, content: &[u8]) -> Result<bool, String> {
@@ -1033,12 +1214,7 @@ fn write_app_state_transaction(
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| "Note file is missing id.".to_string())?;
-        if note_id.is_empty()
-            || note_id.contains('/')
-            || note_id.contains('\\')
-            || note_id == "."
-            || note_id == ".."
-        {
+        if !is_valid_note_id(note_id) {
             return Err("Note id cannot be used as a file name.".to_string());
         }
 
@@ -1070,6 +1246,10 @@ fn write_app_state_transaction(
             items: deleted_stack.to_vec(),
         })?,
     });
+
+    for file in &files {
+        ensure_inside_storage_root(storage_root, &file.target)?;
+    }
 
     let mut deletions = Vec::new();
     if notes_dir.exists() {
@@ -1283,15 +1463,21 @@ fn write_note_bundles(storage_root: &Path, note_bundles: &[NoteBundle]) -> Resul
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| "Note file is missing id.".to_string())?;
+        if !is_valid_note_id(note_id) {
+            return Err("Note id cannot be used as a file name.".to_string());
+        }
+
         let file_name = format!("{note_id}.json");
         active_files.insert(file_name.clone());
+        let bundle_path = notes_dir.join(&file_name);
+        ensure_inside_storage_root(storage_root, &bundle_path)?;
         let next_bundle = NoteBundle {
             schema_version: CURRENT_DATA_VERSION,
             note: bundle.note.clone(),
             entries: bundle.entries.clone(),
             todos: bundle.todos.clone(),
         };
-        write_json_file(&notes_dir.join(&file_name), &next_bundle)?;
+        write_json_file(&bundle_path, &next_bundle)?;
     }
 
     if notes_dir.exists() {
@@ -1729,6 +1915,11 @@ fn restore_attachment_group_from_quarantine(
             }
             let target = attachment_dir.join(&file_name);
             if !target.exists() {
+                // `exists` follows links, so a dangling symbolic link has to be
+                // detected separately before it is turned into a real file.
+                if fs::symlink_metadata(&target).is_ok() {
+                    continue;
+                }
                 fs::rename(entry.path(), &target).map_err(|error| error.to_string())?;
                 sync_parent_directory(&target)?;
             }
@@ -1799,7 +1990,7 @@ fn cleanup_orphan_attachments_in_dir(
 
     let quarantine_batch = attachment_quarantine_dir(attachment_dir).join(now_millis.to_string());
     let mut quarantined_any = false;
-    for entry in fs::read_dir(&attachment_dir).map_err(|error| error.to_string())? {
+    for entry in fs::read_dir(attachment_dir).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         if !entry
             .file_type()
@@ -1980,17 +2171,20 @@ fn store_optimized_attachment(
     };
     let original_file_name = format!("{safe_base}.original.{source_ext}");
     let original_path = attachment_dir.join(&original_file_name);
+    ensure_inside_storage_root(storage_root, &original_path)?;
     fs::write(&original_path, bytes).map_err(|error| error.to_string())?;
 
     let preview_file_name = match build_preview_attachment(bytes, &source_ext, &safe_base) {
         Ok((preview_file_name, preview_bytes)) => {
             let preview_path = attachment_dir.join(&preview_file_name);
+            ensure_inside_storage_root(storage_root, &preview_path)?;
             fs::write(&preview_path, preview_bytes).map_err(|error| error.to_string())?;
             preview_file_name
         }
         Err(_) => {
             let preview_file_name = format!("{safe_base}.preview.{source_ext}");
             let preview_path = attachment_dir.join(&preview_file_name);
+            ensure_inside_storage_root(storage_root, &preview_path)?;
             fs::write(&preview_path, bytes).map_err(|error| error.to_string())?;
             preview_file_name
         }
@@ -2470,5 +2664,387 @@ mod tests {
         let (unchanged, changed_again) = migrate_root_state(migrated.clone()).unwrap();
         assert!(!changed_again);
         assert_eq!(unchanged, migrated);
+    }
+
+    #[test]
+    fn note_ids_that_could_escape_the_notes_directory_are_rejected() {
+        assert!(!is_valid_note_id(""));
+        assert!(!is_valid_note_id("."));
+        assert!(!is_valid_note_id(".."));
+        assert!(!is_valid_note_id("../state"));
+        assert!(!is_valid_note_id("notes/../../etc/passwd"));
+        assert!(!is_valid_note_id("..\\secret"));
+        assert!(!is_valid_note_id("nested/note"));
+        assert!(!is_valid_note_id("nested\\note"));
+    }
+
+    #[test]
+    fn generated_note_ids_are_accepted() {
+        assert!(is_valid_note_id("b3f1c0de-1111-4222-8333-444455556666"));
+        assert!(is_valid_note_id("note_m1b2c3d4e5f"));
+    }
+
+    #[test]
+    fn paths_outside_the_storage_directory_are_rejected() {
+        let storage = TestStorage::new("containment-outside");
+
+        ensure_inside_storage_root(&storage.root, &storage.root.join("notes/note.json")).unwrap();
+
+        let next_to_it = storage.root.parent().unwrap().join("elsewhere.json");
+        let error = ensure_inside_storage_root(&storage.root, &next_to_it)
+            .expect_err("a sibling of the storage root is not ours to write");
+        assert!(
+            error.contains("outside the storage directory"),
+            "got: {error}"
+        );
+
+        // `Path::join` with a leading separator silently replaces everything
+        // before it, which is what a note id or an attachment name must never be
+        // able to do to a path we are about to write.
+        let replaced = PathBuf::from("/etc/passwd");
+        let error = ensure_inside_storage_root(&storage.root, &replaced)
+            .expect_err("an absolute path is not inside the storage directory");
+        assert!(
+            error.contains("outside the storage directory"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_legacy_migration_may_not_use_a_note_id_as_a_path() {
+        let storage = TestStorage::new("containment-migration");
+
+        let error = write_note_bundles(&storage.root, &[note_bundle("../../escape", "x")])
+            .expect_err("an id containing separators must never become a path");
+        assert!(error.contains("file name"), "got: {error}");
+        assert!(
+            !storage.root.parent().unwrap().join("escape.json").exists(),
+            "nothing may be written next to the storage directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_links_below_the_storage_directory_are_rejected() {
+        let storage = TestStorage::new("containment-symlink");
+        let secret = std::env::temp_dir().join(format!(
+            "otternote-symlink-target-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&secret, "not yours").unwrap();
+
+        // A link standing in for a note file would leak or overwrite its target.
+        let note = notes_dir_for_storage_root(&storage.root).join("planted.json");
+        std::os::unix::fs::symlink(&secret, &note).unwrap();
+        let error = ensure_inside_storage_root(&storage.root, &note)
+            .expect_err("a note may not be a symbolic link");
+        assert!(error.contains("Symbolic links"), "got: {error}");
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "not yours");
+
+        // The same holds for a link that replaces the whole images directory.
+        let elsewhere = storage.root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let images = images_dir_for_storage_root(&storage.root);
+        fs::remove_dir_all(&images).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &images).unwrap();
+        assert!(ensure_inside_storage_root(&storage.root, &images.join("a.png")).is_err());
+
+        fs::remove_file(&secret).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_note_that_is_a_symbolic_link_is_never_written_through() {
+        let storage = TestStorage::new("write-through-note");
+        let secret = std::env::temp_dir().join(format!(
+            "otternote-write-through-note-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&secret, "untouched").unwrap();
+        std::os::unix::fs::symlink(&secret, note_bundle_path(&storage.root, "planted")).unwrap();
+
+        let error = write_app_state_transaction(
+            &storage.root,
+            &state_file_path_from_root(&storage.root),
+            root_state("x"),
+            &[note_bundle("planted", "Planted")],
+            &[],
+            None,
+        )
+        .expect_err("a note file may not be a link to somewhere else");
+        assert!(error.contains("Symbolic links"), "got: {error}");
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "untouched");
+        assert!(
+            !state_file_path_from_root(&storage.root).exists(),
+            "the whole transaction is refused, not just the offending file"
+        );
+        assert!(
+            note_bundle_path(&storage.root, "planted")
+                .symlink_metadata()
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false),
+            "a refused transaction must not replace the link with a real file either"
+        );
+        assert!(
+            !storage.root.join(PENDING_TRANSACTION_FILE_NAME).exists(),
+            "the refusal must happen before anything is staged"
+        );
+        assert!(
+            fs::read_dir(notes_dir_for_storage_root(&storage.root))
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")),
+            "nothing may be staged for a path we refuse"
+        );
+
+        fs::remove_file(&secret).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_images_directory_behind_a_symbolic_link_is_never_written_through() {
+        let storage = TestStorage::new("write-through-image");
+        let elsewhere = std::env::temp_dir().join(format!(
+            "otternote-write-through-image-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&elsewhere).unwrap();
+        let images = images_dir_for_storage_root(&storage.root);
+        fs::remove_dir_all(&images).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &images).unwrap();
+
+        let error = store_optimized_attachment(&storage.root, "pic.png", "pic", &[0u8; 4])
+            .expect_err("attachments may not land outside the storage directory");
+        assert!(error.contains("Symbolic links"), "got: {error}");
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+        fs::remove_dir_all(&elsewhere).unwrap();
+    }
+
+    #[test]
+    fn note_bundle_paths_stay_inside_the_notes_directory() {
+        let storage_root = Path::new("/tmp/otter-test");
+        let path = note_bundle_path(storage_root, "b3f1c0de-1111-4222-8333-444455556666");
+
+        assert!(path.starts_with(notes_dir_for_storage_root(storage_root)));
+        assert_eq!(
+            path.file_name().unwrap(),
+            "b3f1c0de-1111-4222-8333-444455556666.json"
+        );
+    }
+
+    #[test]
+    fn transaction_paths_must_be_relative_and_normal() {
+        let storage_root = Path::new("/tmp/otter-test");
+
+        assert_eq!(
+            resolve_transaction_path(storage_root, "notes/a.json").unwrap(),
+            storage_root.join("notes/a.json")
+        );
+
+        for unsafe_path in [
+            "/absolute.json",
+            "../state.json",
+            "notes/../../state.json",
+            "./state.json",
+        ] {
+            assert!(
+                resolve_transaction_path(storage_root, unsafe_path).is_err(),
+                "expected {unsafe_path} to be rejected"
+            );
+        }
+
+        // Redundant `.` components are normalized away by the path parser, so
+        // they still resolve inside the storage root.
+        assert!(resolve_transaction_path(storage_root, "notes/./a.json")
+            .unwrap()
+            .starts_with(storage_root));
+    }
+
+    #[test]
+    fn attachment_names_lose_characters_that_are_not_file_safe() {
+        assert_eq!(
+            sanitize_attachment_name("asset-1.preview.png"),
+            "asset-1.preview.png"
+        );
+        assert_eq!(sanitize_attachment_name("../etc/passwd"), "..etcpasswd");
+        assert_eq!(sanitize_attachment_name("../../secret"), "....secret");
+        assert_eq!(sanitize_attachment_name("asset 1.png"), "asset1.png");
+        assert_eq!(sanitize_attachment_name("画像.png"), ".png");
+        assert_eq!(sanitize_attachment_name(""), "");
+    }
+
+    #[test]
+    fn sanitized_attachment_names_must_round_trip_to_be_accepted() {
+        for rejected in ["../etc/passwd", "asset 1.png", "../../secret", "画像.png"] {
+            let sanitized = sanitize_attachment_name(rejected);
+            assert!(
+                sanitized.is_empty() || sanitized != rejected,
+                "expected {rejected} to fail the round trip check"
+            );
+        }
+
+        assert_eq!(sanitize_attachment_name("asset-1.png"), "asset-1.png");
+    }
+
+    #[test]
+    fn attachment_groups_are_keyed_by_the_asset_name() {
+        assert_eq!(attachment_group_key("asset-1.preview.png"), "asset-1");
+        assert_eq!(attachment_group_key("asset-1.original.png"), "asset-1");
+        assert_eq!(attachment_group_key("asset-1.png"), "asset-1");
+        assert_eq!(attachment_group_key("asset-1"), "asset-1");
+    }
+
+    #[test]
+    fn custom_storage_paths_must_be_folders_and_absolute() {
+        assert!(validate_custom_path("").is_err());
+        assert!(validate_custom_path("   ").is_err());
+        assert!(validate_custom_path("relative/folder").is_err());
+        assert!(validate_custom_path("/tmp/notes/state.json").is_err());
+        assert!(validate_custom_path("/tmp/notes").is_ok());
+    }
+
+    #[test]
+    fn window_labels_use_only_safe_characters() {
+        assert_eq!(sanitize_window_label("note-1"), "note-1");
+        assert_eq!(sanitize_window_label("note_1"), "note_1");
+        assert_eq!(sanitize_window_label("note 1/b"), "note-1-b");
+        assert_eq!(sanitize_window_label("../../x"), "------x");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn development_data_root_lives_in_the_checkout() {
+        assert_eq!(
+            development_data_root(Path::new("/checkout/src-tauri")),
+            Some(PathBuf::from("/checkout/data"))
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn development_data_root_never_becomes_the_filesystem_root() {
+        // A debug build launched from Finder runs with "/" as its working
+        // directory, which is why the crate directory is used instead of
+        // std::env::current_dir().
+        assert_eq!(development_data_root(Path::new("/")), None);
+
+        let data_dir = development_data_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+        let data_dir = data_dir.expect("the crate directory has a parent");
+        assert!(data_dir.ends_with("data"));
+        assert_ne!(data_dir, PathBuf::from("/data"));
+        assert!(data_dir.is_absolute());
+    }
+
+    #[test]
+    fn blank_scratch_directory_overrides_count_as_unset() {
+        use std::ffi::OsStr;
+
+        assert_eq!(parse_data_dir_override(None), None);
+        assert_eq!(parse_data_dir_override(Some(OsStr::new(""))), None);
+        assert_eq!(parse_data_dir_override(Some(OsStr::new("   "))), None);
+
+        let scratch = std::env::temp_dir().join("otternote-scratch");
+        assert_eq!(
+            parse_data_dir_override(Some(OsStr::new(&scratch))),
+            Some(scratch)
+        );
+    }
+
+    #[test]
+    fn release_default_root_is_exactly_the_home_otter_note_directory() {
+        let home = Path::new("/home/user");
+
+        assert!(root_is_release_default(
+            Path::new("/home/user/OtterNote"),
+            Some(home)
+        ));
+        assert!(!root_is_release_default(
+            Path::new("/home/user/OtterNote/notes"),
+            Some(home)
+        ));
+        assert!(!root_is_release_default(
+            Path::new("/home/user/OtherNotes"),
+            Some(home)
+        ));
+        assert!(!root_is_release_default(
+            Path::new("/elsewhere/OtterNote"),
+            Some(home)
+        ));
+        assert!(!root_is_release_default(
+            Path::new("/home/user/OtterNote"),
+            None
+        ));
+    }
+
+    #[test]
+    fn debug_builds_refuse_the_release_data_directory() {
+        let home = Path::new("/home/user");
+        let release_root = Path::new("/home/user/OtterNote");
+
+        let error = guard_storage_root(release_root, Some(home), true)
+            .expect_err("a debug build must not write into the release data");
+        assert!(error.contains("OTTERNOTE_DATA_DIR"), "got: {error}");
+
+        // A release build may use it, and a debug build is free to use anywhere
+        // else, including a scratch directory the developer picked.
+        assert!(guard_storage_root(release_root, Some(home), false).is_ok());
+        assert!(guard_storage_root(Path::new("/checkout/data"), Some(home), true).is_ok());
+        assert!(guard_storage_root(Path::new("/home/user/MyNotes"), Some(home), true).is_ok());
+    }
+
+    #[test]
+    fn storage_root_prefers_the_configured_path_over_the_default() {
+        let home = Path::new("/home/user");
+        let default_root = PathBuf::from("/checkout/data");
+
+        assert_eq!(
+            choose_storage_root(
+                Some("/home/user/MyNotes"),
+                default_root.clone(),
+                Some(home),
+                true,
+            )
+            .unwrap(),
+            PathBuf::from("/home/user/MyNotes")
+        );
+        assert_eq!(
+            choose_storage_root(None, default_root.clone(), Some(home), true).unwrap(),
+            default_root
+        );
+    }
+
+    #[test]
+    fn a_configured_home_path_is_still_refused_in_debug_builds() {
+        let Some(home_os) = std::env::var_os("HOME") else {
+            return;
+        };
+        let home = Path::new(&home_os);
+        let default_root = home.join("elsewhere");
+
+        let error =
+            choose_storage_root(Some("~/OtterNote"), default_root.clone(), Some(home), true)
+                .expect_err(
+                    "a stored \"~/OtterNote\" must not send a debug build into the live data",
+                );
+        assert!(error.contains("OTTERNOTE_DATA_DIR"), "got: {error}");
+
+        // A release build is supposed to use exactly that directory.
+        assert!(choose_storage_root(Some("~/OtterNote"), default_root, Some(home), false).is_ok());
+    }
+
+    #[test]
+    fn parent_directories_are_created_before_writing() {
+        let storage = TestStorage::new("parent-dir");
+        let nested = storage.root.join("nested").join("storage.json");
+
+        ensure_parent_directory(&nested).unwrap();
+        assert!(storage.root.join("nested").is_dir());
+
+        ensure_parent_directory(&nested).unwrap();
+        ensure_parent_directory(Path::new("storage.json")).unwrap();
     }
 }
