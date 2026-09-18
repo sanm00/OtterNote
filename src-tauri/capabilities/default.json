@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main window.",
+  "description": "Capabilities for the main window and the pinned note windows. The frontend only uses event communication with the Rust side and the file and confirmation dialogs, so no other core or plugin permissions are granted.",
   "windows": ["main", "pinned-*"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:event:default", "dialog:allow-open", "dialog:allow-save", "dialog:allow-ask"]
 }
