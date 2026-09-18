@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/sanm00/OtterNote/actions/workflows/ci.yml/badge.svg)](https://github.com/sanm00/OtterNote/actions/workflows/ci.yml)
 
+**English** | [简体中文](README.zh-CN.md)
+
 Local-first notes and ToDo app with a two-column workspace. Notes, attachments, and the search index stay on your machine.
 
 > Status: pre-1.0 and under active development. Data formats and shortcuts may still change between releases.
