@@ -22,11 +22,7 @@ export function parseTodosFromEntry(content: string): ParsedTodo[] {
     .filter((item): item is ParsedTodo => item !== null && item.title.length > 0);
 }
 
-export function updateTodoStatusInEntryContent(
-  content: string,
-  occurrenceIndex: number,
-  status: TodoStatus,
-) {
+export function updateTodoStatusInEntryContent(content: string, occurrenceIndex: number, status: TodoStatus) {
   let taskLineIndex = -1;
   const nextMarker = status === 'done' ? 'x' : ' ';
 

@@ -167,10 +167,15 @@ export async function readNoteBundle(noteId: string): Promise<string | null> {
   return invoke<string | null>('read_note_bundle', { noteId });
 }
 
-export async function searchNotes(query: string): Promise<Array<{ noteId: string; title: string; updatedAt: string; preview: string }>> {
-  return invoke<Array<{ noteId: string; title: string; updatedAt: string; preview: string }>>('search_notes', {
-    query,
-  });
+export async function searchNotes(
+  query: string,
+): Promise<Array<{ noteId: string; title: string; updatedAt: string; preview: string }>> {
+  return invoke<Array<{ noteId: string; title: string; updatedAt: string; preview: string }>>(
+    'search_notes',
+    {
+      query,
+    },
+  );
 }
 
 export async function listImageAttachments(): Promise<ImageAttachment[]> {

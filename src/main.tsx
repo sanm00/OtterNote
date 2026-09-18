@@ -37,6 +37,24 @@ import { markdown } from '@codemirror/lang-markdown';
 import './styles.css';
 import { createId } from './id';
 import { updateTodoStatusInEntryContent } from './todo-parser';
+import { attachmentFallbackCandidates, extractAttachmentReferences } from './lib/attachments';
+import {
+  extractAltText,
+  extractFileName,
+  formatAttachmentTime,
+  formatBytes,
+  imageExtensionFromMimeType,
+  isImageFileName,
+  mimeTypeFromFileName,
+  normalizeClipboardImagePath,
+} from './lib/files';
+import {
+  buildExportFileName,
+  buildNoteMarkdown,
+  displayTitle,
+  markdownUrlTransform,
+  titleFromFirstLine,
+} from './lib/markdown';
 import {
   defaultShortcuts,
   snapshotAppState,
@@ -82,12 +100,17 @@ const SIDEBAR_NOTES_PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_DELAY_MS = 180;
 const NOTE_TITLE_SAVE_DELAY_MS = 500;
 
-const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-  { id: 'notes', label: 'Notes', icon: NotebookText },
-  { id: 'todos', label: 'ToDos', icon: ListTodo },
-];
+const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> =
+  [
+    { id: 'notes', label: 'Notes', icon: NotebookText },
+    { id: 'todos', label: 'ToDos', icon: ListTodo },
+  ];
 
-const auxiliaryNavItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+const auxiliaryNavItems: Array<{
+  id: NavSection;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
   { id: 'timeline', label: 'Timeline', icon: Clock3 },
   { id: 'images', label: 'Images', icon: ImageIcon },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -96,19 +119,22 @@ const auxiliaryNavItems: Array<{ id: NavSection; label: string; icon: React.Comp
 
 function App() {
   const theme = useAppStore((state) => state.theme);
-  const isPinnedNewNote = getPinnedNewNote();
-  const pinnedNoteId = getPinnedNoteId();
   useTheme(theme);
   useAppStateChangeSync();
 
-  if (isPinnedNewNote) {
+  if (getPinnedNewNote()) {
     return <PinnedNewNoteWindow />;
   }
 
+  const pinnedNoteId = getPinnedNoteId();
   if (pinnedNoteId) {
     return <PinnedNoteWindow noteId={pinnedNoteId} />;
   }
 
+  return <WorkspaceApp />;
+}
+
+function WorkspaceApp() {
   const hasContent = useAppStore((state) => state.notes.length > 0 || state.todos.length > 0);
   const activeSection = useAppStore((state) => state.activeSection);
   const query = useAppStore((state) => state.query.trim());
@@ -132,7 +158,13 @@ function App() {
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col">
         {showSearchResults ? <SearchResultsPage query={query} /> : null}
-        {activeSection === 'timeline' && !showSearchResults ? (hasContent ? <Timeline /> : <TimelineEmptyState />) : null}
+        {activeSection === 'timeline' && !showSearchResults ? (
+          hasContent ? (
+            <Timeline />
+          ) : (
+            <TimelineEmptyState />
+          )
+        ) : null}
         {activeSection === 'new' && !showSearchResults ? <NewEntryPage /> : null}
         {activeSection === 'notes' && !showSearchResults ? <NotesWorkspace /> : null}
         {activeSection === 'todos' && !showSearchResults ? <TodosPage /> : null}
@@ -230,7 +262,10 @@ function useKeyboardShortcuts() {
         return;
       }
 
-      if (matchesShortcut(event, (shortcuts as Record<string, string>).undo ?? '') && !isTextInputTarget(event.target)) {
+      if (
+        matchesShortcut(event, (shortcuts as Record<string, string>).undo ?? '') &&
+        !isTextInputTarget(event.target)
+      ) {
         event.preventDefault();
         undoLastDelete();
       }
@@ -238,7 +273,15 @@ function useKeyboardShortcuts() {
 
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [clearSelectedNote, searchFocused, setActiveSection, setQuery, setSearchFocused, shortcuts, undoLastDelete]);
+  }, [
+    clearSelectedNote,
+    searchFocused,
+    setActiveSection,
+    setQuery,
+    setSearchFocused,
+    shortcuts,
+    undoLastDelete,
+  ]);
 }
 
 function Sidebar() {
@@ -290,12 +333,7 @@ function Sidebar() {
               }}
             >
               <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden">
-                <img
-                  src={logoSrc}
-                  alt=""
-                  aria-hidden="true"
-                  className="h-7 w-7 rounded-md object-cover"
-                />
+                <img src={logoSrc} alt="" aria-hidden="true" className="h-7 w-7 rounded-md object-cover" />
               </span>
               <div className="min-w-0">
                 <div className="truncate text-base font-semibold text-slate-950">OtterNote</div>
@@ -321,18 +359,18 @@ function Sidebar() {
       <div className="px-3">
         <label className="relative block">
           <Search className="pointer-events-none absolute left-3 top-2 h-4 w-4 text-slate-400" />
-            <input
-              data-search-input="true"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onFocus={() => {
-                setSearchFocused(true);
-                setActiveSection('notes');
-              }}
-              onBlur={() => setSearchFocused(false)}
-              placeholder="Search notes, todos..."
-              className="sidebar-search h-9 w-full rounded-md border pl-9 pr-3 text-sm outline-none focus:ring-2"
-            />
+          <input
+            data-search-input="true"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onFocus={() => {
+              setSearchFocused(true);
+              setActiveSection('notes');
+            }}
+            onBlur={() => setSearchFocused(false)}
+            placeholder="Search notes, todos..."
+            className="sidebar-search h-9 w-full rounded-md border pl-9 pr-3 text-sm outline-none focus:ring-2"
+          />
         </label>
       </div>
 
@@ -342,9 +380,7 @@ function Sidebar() {
           <span aria-label={`${sortedNotes.length} notes`}>{sortedNotes.length}</span>
         </div>
         {sortedNotes.length === 0 ? (
-          <p className="sidebar-empty-note">
-            No notes yet.
-          </p>
+          <p className="sidebar-empty-note">No notes yet.</p>
         ) : (
           <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1" onScroll={loadMoreNotes}>
             {visibleNotes.map((note) => (
@@ -356,7 +392,9 @@ function Sidebar() {
                 onClick={() => selectNote(note.id)}
               >
                 <div className="truncate font-medium">{displayTitle(note.title)}</div>
-                <div className={`truncate text-[10px] leading-4 ${selectedNoteId === note.id ? 'sidebar-selected-meta' : 'text-slate-500'}`}>
+                <div
+                  className={`truncate text-[10px] leading-4 ${selectedNoteId === note.id ? 'sidebar-selected-meta' : 'text-slate-500'}`}
+                >
                   {formatDate(note.updatedAt)}
                 </div>
               </button>
@@ -450,13 +488,16 @@ function NewEntryPage() {
   const updateTitleFromContent = React.useCallback((content: string) => {
     setTitleDraft(titleFromFirstLine(content));
   }, []);
-  const updateDraft = React.useCallback((value: React.SetStateAction<string>) => {
-    setDraft((current) => {
-      const next = typeof value === 'function' ? value(current) : value;
-      updateTitleFromContent(next);
-      return next;
-    });
-  }, [updateTitleFromContent]);
+  const updateDraft = React.useCallback(
+    (value: React.SetStateAction<string>) => {
+      setDraft((current) => {
+        const next = typeof value === 'function' ? value(current) : value;
+        updateTitleFromContent(next);
+        return next;
+      });
+    },
+    [updateTitleFromContent],
+  );
 
   const insertImage = React.useCallback(async () => {
     try {
@@ -532,7 +573,7 @@ function NewEntryPage() {
     <div className="app-workspace relative flex min-h-0 flex-1 flex-col">
       <DocumentHeader
         subtitle="Write quickly, then save to create a note."
-        titleInput={(
+        titleInput={
           <input
             value={titleDraft}
             onChange={(event) => setTitleDraft(event.target.value)}
@@ -545,8 +586,8 @@ function NewEntryPage() {
             placeholder="Untitled Note"
             className="document-title-input"
           />
-        )}
-        toolbar={(
+        }
+        toolbar={
           <WorkspaceToolbar
             mode="edit"
             showEditButton={false}
@@ -559,7 +600,7 @@ function NewEntryPage() {
             onDelete={undefined}
             saveLabel="Save"
           />
-        )}
+        }
       />
       <StatusToast message={status} />
       <div className="flex min-h-0 flex-1 px-6 py-5">
@@ -568,7 +609,11 @@ function NewEntryPage() {
             <CodeMirror
               value={draft}
               height="100%"
-              extensions={[markdown(), EditorView.lineWrapping, imagePasteExtension((file, view) => insertImageFile(file, updateDraft, view))]}
+              extensions={[
+                markdown(),
+                EditorView.lineWrapping,
+                imagePasteExtension((file, view) => insertImageFile(file, updateDraft, view)),
+              ]}
               basicSetup={{ lineNumbers: false, foldGutter: false }}
               onChange={updateDraft}
               onCreateEditor={(view) => {
@@ -608,7 +653,9 @@ function Timeline() {
         ) : (
           groups.map((group) => (
             <section key={group.label}>
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{group.label}</div>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {group.label}
+              </div>
               <div className="space-y-2">
                 {group.notes.map((note) => (
                   <button
@@ -643,7 +690,10 @@ function NotesListPage() {
   const selectNote = useAppStore((state) => state.selectNote);
   const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
-  const sortedNotes = React.useMemo(() => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [notes]);
+  const sortedNotes = React.useMemo(
+    () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [notes],
+  );
   const previewByNoteId = React.useMemo(() => {
     const next = new Map<string, string>();
     for (const note of sortedNotes) {
@@ -674,7 +724,9 @@ function NotesListPage() {
               onClick={() => selectNote(note.id)}
             >
               <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
-              <div className="note-list-preview mt-1 text-sm text-slate-600">{previewByNoteId.get(note.id) ?? 'No content yet.'}</div>
+              <div className="note-list-preview mt-1 text-sm text-slate-600">
+                {previewByNoteId.get(note.id) ?? 'No content yet.'}
+              </div>
               <div className="mt-1 text-xs text-slate-500">
                 Created {formatDate(note.createdAt)} · Updated {formatDate(note.updatedAt)}
               </div>
@@ -783,7 +835,9 @@ function NoteDetail({ noteId }: { noteId: string }) {
 
     const markdown = buildNoteMarkdown(
       note.title,
-      isEditing ? mergeDraftEntries(entries, draftEntryId, draftContent) : entries.map((entry) => entry.content),
+      isEditing
+        ? mergeDraftEntries(entries, draftEntryId, draftContent)
+        : entries.map((entry) => entry.content),
     );
     const fileName = buildExportFileName(note.title);
 
@@ -857,7 +911,11 @@ function NoteDetail({ noteId }: { noteId: string }) {
       const image = await chooseMarkdownImage();
       if (!image) return;
 
-      insertMarkdownAtCursor(editorViewRef.current, `![${image.altText}](${image.markdownUrl})`, setDraftContent);
+      insertMarkdownAtCursor(
+        editorViewRef.current,
+        `![${image.altText}](${image.markdownUrl})`,
+        setDraftContent,
+      );
       setStatus(`Image inserted: ${image.altText}`);
     } catch (currentError) {
       window.alert(errorMessage(currentError));
@@ -902,56 +960,62 @@ function NoteDetail({ noteId }: { noteId: string }) {
     <div className="app-workspace relative flex min-h-0 flex-1 flex-col">
       <DocumentHeader
         subtitle={`Updated ${formatDate(note.updatedAt)}`}
-        titleInput={(
+        titleInput={
           <div className="flex items-center gap-3">
-          <input
-            value={titleDraft}
-            onChange={(event) => setTitleDraft(event.target.value)}
-            onBlur={saveTitleDraft}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                saveTitleDraft();
-                if (!isEditing) {
-                  startEditing();
-                  window.setTimeout(() => editorViewRef.current?.focus(), 0);
-                  return;
+            <input
+              value={titleDraft}
+              onChange={(event) => setTitleDraft(event.target.value)}
+              onBlur={saveTitleDraft}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  saveTitleDraft();
+                  if (!isEditing) {
+                    startEditing();
+                    window.setTimeout(() => editorViewRef.current?.focus(), 0);
+                    return;
+                  }
+                  editorViewRef.current?.focus();
                 }
-                editorViewRef.current?.focus();
-              }
-            }}
-            placeholder="Untitled Note"
-            className="document-title-input"
-          />
+              }}
+              placeholder="Untitled Note"
+              className="document-title-input"
+            />
           </div>
-        )}
-        toolbar={(
+        }
+        toolbar={
           <WorkspaceToolbar
             mode={isEditing ? 'edit' : 'preview'}
             showEditButton={true}
             onExport={exportCurrentNote}
             onPin={pinCurrentNote}
-        onInsertImage={isEditing ? insertImage : undefined}
-          onSave={saveDraft}
-          onEdit={startEditing}
-          onCancel={isEditing ? cancelEditing : undefined}
-          saveDisabled={isEditing ? !canSaveDraft : false}
-          isDirty={hasUnsavedEntryChanges}
-          onDelete={deleteCurrentNote}
-          saveLabel="Save"
-        />
-        )}
+            onInsertImage={isEditing ? insertImage : undefined}
+            onSave={saveDraft}
+            onEdit={startEditing}
+            onCancel={isEditing ? cancelEditing : undefined}
+            saveDisabled={isEditing ? !canSaveDraft : false}
+            isDirty={hasUnsavedEntryChanges}
+            onDelete={deleteCurrentNote}
+            saveLabel="Save"
+          />
+        }
       />
       <StatusToast message={status} />
       <div className={`min-h-0 flex-1 px-6 py-5 ${isEditing ? 'flex' : 'overflow-y-auto'}`}>
-        <div className={`w-full ${isEditing ? 'editor-workspace flex min-h-0 flex-1' : 'mx-auto max-w-3xl space-y-3.5'}`}>
+        <div
+          className={`w-full ${isEditing ? 'editor-workspace flex min-h-0 flex-1' : 'mx-auto max-w-3xl space-y-3.5'}`}
+        >
           {isEditing ? (
             <div className="editor-shell">
               <CodeMirror
                 key={noteId}
                 value={draftContent}
                 height="100%"
-                extensions={[markdown(), EditorView.lineWrapping, imagePasteExtension((file, view) => insertImageFile(file, setDraftContent, view))]}
+                extensions={[
+                  markdown(),
+                  EditorView.lineWrapping,
+                  imagePasteExtension((file, view) => insertImageFile(file, setDraftContent, view)),
+                ]}
                 basicSetup={{ lineNumbers: false, foldGutter: false }}
                 onChange={setDraftContent}
                 onCreateEditor={(view) => {
@@ -964,9 +1028,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
             <article className="entry-card">
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
-                  <div className="document-empty-hint">
-                    No note text. This note only has a title.
-                  </div>
+                  <div className="document-empty-hint">No note text. This note only has a title.</div>
                 </div>
               </div>
             </article>
@@ -976,8 +1038,16 @@ function NoteDetail({ noteId }: { noteId: string }) {
         </div>
       </div>
       {showDeleteConfirmation ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-6" role="presentation">
-          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="delete-note-title">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-6"
+          role="presentation"
+        >
+          <div
+            className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-note-title"
+          >
             <h2 id="delete-note-title" className="text-base font-semibold text-slate-950">
               Delete this note?
             </h2>
@@ -985,10 +1055,18 @@ function NoteDetail({ noteId }: { noteId: string }) {
               The note and all of its ToDo items will be deleted. This action cannot be undone.
             </p>
             <div className="mt-5 flex justify-end gap-2">
-              <button type="button" className="secondary-button" onClick={() => setShowDeleteConfirmation(false)}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setShowDeleteConfirmation(false)}
+              >
                 Cancel
               </button>
-              <button type="button" className="primary-button bg-red-600 hover:bg-red-700" onClick={confirmNoteDeletion}>
+              <button
+                type="button"
+                className="primary-button bg-red-600 hover:bg-red-700"
+                onClick={confirmNoteDeletion}
+              >
                 Delete
               </button>
             </div>
@@ -1010,7 +1088,9 @@ function PinnedNewNoteWindow() {
   const [savedNoteId, setSavedNoteId] = React.useState<string | null>(null);
   const [savedEntryId, setSavedEntryId] = React.useState<string | null>(null);
   const [isEditing, setIsEditing] = React.useState(false);
-  const [status, setStatus] = React.useState('Ready');
+  // Save status messages are currently not surfaced in this view, but the
+  // setter is kept because the save flow still records status transitions.
+  const [, setStatus] = React.useState('Ready');
   const [showSavedToast, setShowSavedToast] = React.useState(false);
   const editorViewRef = React.useRef<EditorView | null>(null);
   const isInsertingImageRef = React.useRef(false);
@@ -1030,58 +1110,67 @@ function PinnedNewNoteWindow() {
     };
   }, []);
 
-  const saveDraftContent = React.useCallback(async (
-    nextDraft: string,
-    nextTitleDraft = titleFromFirstLine(nextDraft),
-    mode: 'auto' | 'manual' = 'manual',
-  ) => {
-    await waitForStoreHydration();
-    const content = nextDraft.trim();
-    const title = nextTitleDraft.trim();
-    if (!content && !title) {
-      return;
-    }
-
-    if (lastSavedRef.current.title === title && lastSavedRef.current.content === nextDraft) {
-      return;
-    }
-
-    setStatus('Saving...');
-
-    if (!savedNoteId) {
-      if (content) {
-        createNoteWithEntry(nextDraft, title);
-      } else {
-        createNote(title);
+  const saveDraftContent = React.useCallback(
+    async (
+      nextDraft: string,
+      nextTitleDraft = titleFromFirstLine(nextDraft),
+      mode: 'auto' | 'manual' = 'manual',
+    ) => {
+      await waitForStoreHydration();
+      const content = nextDraft.trim();
+      const title = nextTitleDraft.trim();
+      if (!content && !title) {
+        return;
       }
 
-      const state = useAppStore.getState();
-      const nextNoteId = state.selectedNoteId ?? state.notes[0]?.id ?? null;
-      const nextEntryId = nextNoteId ? state.entries.find((entry) => entry.noteId === nextNoteId)?.id ?? null : null;
-      setSavedNoteId(nextNoteId);
-      setSavedEntryId(nextEntryId);
-    } else {
-      updateNoteTitle(savedNoteId, title || 'Untitled Note');
-      if (savedEntryId) {
-        useAppStore.getState().updateEntry(savedEntryId, nextDraft);
-      } else if (content) {
-        addEntry(savedNoteId, nextDraft);
-        const nextEntryId = useAppStore.getState().entries.find((entry) => entry.noteId === savedNoteId)?.id ?? null;
+      if (lastSavedRef.current.title === title && lastSavedRef.current.content === nextDraft) {
+        return;
+      }
+
+      setStatus('Saving...');
+
+      if (!savedNoteId) {
+        if (content) {
+          createNoteWithEntry(nextDraft, title);
+        } else {
+          createNote(title);
+        }
+
+        const state = useAppStore.getState();
+        const nextNoteId = state.selectedNoteId ?? state.notes[0]?.id ?? null;
+        const nextEntryId = nextNoteId
+          ? (state.entries.find((entry) => entry.noteId === nextNoteId)?.id ?? null)
+          : null;
+        setSavedNoteId(nextNoteId);
         setSavedEntryId(nextEntryId);
+      } else {
+        updateNoteTitle(savedNoteId, title || 'Untitled Note');
+        if (savedEntryId) {
+          useAppStore.getState().updateEntry(savedEntryId, nextDraft);
+        } else if (content) {
+          addEntry(savedNoteId, nextDraft);
+          const nextEntryId =
+            useAppStore.getState().entries.find((entry) => entry.noteId === savedNoteId)?.id ?? null;
+          setSavedEntryId(nextEntryId);
+        }
       }
-    }
 
-    lastSavedRef.current = { title, content: nextDraft };
-    setStatus(mode === 'auto' ? 'Saved automatically' : 'Saved');
-    if (mode === 'auto') {
-      setShowSavedToast(true);
-    }
-    await notifyAppStateChanged();
-  }, [addEntry, createNote, createNoteWithEntry, savedEntryId, savedNoteId, updateNoteTitle]);
+      lastSavedRef.current = { title, content: nextDraft };
+      setStatus(mode === 'auto' ? 'Saved automatically' : 'Saved');
+      if (mode === 'auto') {
+        setShowSavedToast(true);
+      }
+      await notifyAppStateChanged();
+    },
+    [addEntry, createNote, createNoteWithEntry, savedEntryId, savedNoteId, updateNoteTitle],
+  );
 
-  const saveDraft = React.useCallback((mode: 'auto' | 'manual' = 'manual') => {
-    return saveDraftContent(draft, titleDraft, mode);
-  }, [draft, saveDraftContent, titleDraft]);
+  const saveDraft = React.useCallback(
+    (mode: 'auto' | 'manual' = 'manual') => {
+      return saveDraftContent(draft, titleDraft, mode);
+    },
+    [draft, saveDraftContent, titleDraft],
+  );
 
   React.useEffect(() => {
     if (!storeHydrated) {
@@ -1128,45 +1217,54 @@ function PinnedNewNoteWindow() {
     void saveDraft('auto');
   }, [saveDraft]);
 
-  const togglePreviewTodo = React.useCallback((occurrenceIndex: number, done: boolean) => {
-    const nextDraft = updateTodoStatusInEntryContent(draft, occurrenceIndex, done ? 'done' : 'todo');
-    updateDraft(nextDraft);
-    void saveDraftContent(nextDraft, titleFromFirstLine(nextDraft), 'auto');
-  }, [draft, saveDraftContent, updateDraft]);
-
-  const insertPinnedImage = React.useCallback(async (payload: ClipboardImagePayload, view: EditorView | null) => {
-    isInsertingImageRef.current = true;
-    try {
-      setStatus('Pasting image...');
-      const image = await createMarkdownImageFromPayload(payload);
-      const nextDraft = insertMarkdownAtCursorAndGetContent(
-        view,
-        `![${image.altText}](${image.markdownUrl})`,
-        draft,
-      );
+  const togglePreviewTodo = React.useCallback(
+    (occurrenceIndex: number, done: boolean) => {
+      const nextDraft = updateTodoStatusInEntryContent(draft, occurrenceIndex, done ? 'done' : 'todo');
       updateDraft(nextDraft);
+      void saveDraftContent(nextDraft, titleFromFirstLine(nextDraft), 'auto');
+    },
+    [draft, saveDraftContent, updateDraft],
+  );
+
+  const insertPinnedImage = React.useCallback(
+    async (payload: ClipboardImagePayload, view: EditorView | null) => {
+      isInsertingImageRef.current = true;
+      try {
+        setStatus('Pasting image...');
+        const image = await createMarkdownImageFromPayload(payload);
+        const nextDraft = insertMarkdownAtCursorAndGetContent(
+          view,
+          `![${image.altText}](${image.markdownUrl})`,
+          draft,
+        );
+        updateDraft(nextDraft);
+        setIsEditing(true);
+        await saveDraftContent(nextDraft, titleFromFirstLine(nextDraft), 'auto');
+      } finally {
+        isInsertingImageRef.current = false;
+      }
+    },
+    [draft, saveDraftContent, updateDraft],
+  );
+
+  const handlePaste = React.useCallback(
+    (event: React.ClipboardEvent) => {
+      const image = extractClipboardImagePayload(event.nativeEvent);
+      if (!image) {
+        setStatus('Paste ignored: no image found');
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
       setIsEditing(true);
-      await saveDraftContent(nextDraft, titleFromFirstLine(nextDraft), 'auto');
-    } finally {
-      isInsertingImageRef.current = false;
-    }
-  }, [draft, saveDraftContent, updateDraft]);
-
-  const handlePaste = React.useCallback((event: React.ClipboardEvent) => {
-    const image = extractClipboardImagePayload(event.nativeEvent);
-    if (!image) {
-      setStatus('Paste ignored: no image found');
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    setIsEditing(true);
-    void insertPinnedImage(image, editorViewRef.current).catch((error) => {
-      setStatus(`Paste failed: ${errorMessage(error)}`);
-      window.alert(errorMessage(error));
-    });
-  }, [insertPinnedImage]);
+      void insertPinnedImage(image, editorViewRef.current).catch((error) => {
+        setStatus(`Paste failed: ${errorMessage(error)}`);
+        window.alert(errorMessage(error));
+      });
+    },
+    [insertPinnedImage],
+  );
 
   React.useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
@@ -1238,27 +1336,31 @@ function PinnedNewNoteWindow() {
         onPaste={handlePaste}
       >
         {isEditing ? (
-        <div className="pinned-editor-shell min-h-full">
-          <CodeMirror
-            value={draft}
-            height="100%"
-            extensions={[markdown(), EditorView.lineWrapping, imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view))]}
-            basicSetup={{ lineNumbers: false, foldGutter: false }}
-            onChange={updateDraft}
-            onCreateEditor={(view) => {
-              editorViewRef.current = view;
-              view.dom.addEventListener('focusout', () => {
-                window.setTimeout(() => {
-                  if (!view.dom.contains(document.activeElement)) {
-                    finishEditing();
-                  }
-                }, 0);
-              });
-              view.focus();
-            }}
-            placeholder={'Start writing...\n\n- [ ] Add a ToDo'}
-          />
-        </div>
+          <div className="pinned-editor-shell min-h-full">
+            <CodeMirror
+              value={draft}
+              height="100%"
+              extensions={[
+                markdown(),
+                EditorView.lineWrapping,
+                imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view)),
+              ]}
+              basicSetup={{ lineNumbers: false, foldGutter: false }}
+              onChange={updateDraft}
+              onCreateEditor={(view) => {
+                editorViewRef.current = view;
+                view.dom.addEventListener('focusout', () => {
+                  window.setTimeout(() => {
+                    if (!view.dom.contains(document.activeElement)) {
+                      finishEditing();
+                    }
+                  }, 0);
+                });
+                view.focus();
+              }}
+              placeholder={'Start writing...\n\n- [ ] Add a ToDo'}
+            />
+          </div>
         ) : (
           <PinnedNotePreview
             content={draft}
@@ -1285,7 +1387,9 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
   const [draftTitle, setDraftTitle] = React.useState('');
   const [draftEntryId, setDraftEntryId] = React.useState<string | null>(null);
   const [draftContent, setDraftContent] = React.useState('');
-  const [status, setStatus] = React.useState('Ready');
+  // Save status messages are currently not surfaced in this view, but the
+  // setter is kept because the save flow still records status transitions.
+  const [, setStatus] = React.useState('Ready');
   const [showSavedToast, setShowSavedToast] = React.useState(false);
   const editorViewRef = React.useRef<EditorView | null>(null);
   const isInsertingImageRef = React.useRef(false);
@@ -1372,44 +1476,47 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
     initializedRef.current = true;
   }, [bundle, entries, loadFailed, note, title]);
 
-  const saveDraftContent = React.useCallback(async (
-    nextDraftContent: string,
-    nextDraftTitle = draftTitle,
-    mode: 'auto' | 'manual' = 'manual',
-  ) => {
-    await waitForStoreHydration();
-    const nextTitle = nextDraftTitle.trim();
-    const nextContent = nextDraftContent.trim();
-    if (!note && !bundle) {
-      return;
-    }
+  const saveDraftContent = React.useCallback(
+    async (nextDraftContent: string, nextDraftTitle = draftTitle, mode: 'auto' | 'manual' = 'manual') => {
+      await waitForStoreHydration();
+      const nextTitle = nextDraftTitle.trim();
+      const nextContent = nextDraftContent.trim();
+      if (!note && !bundle) {
+        return;
+      }
 
-    if (lastSavedRef.current.title === nextTitle && lastSavedRef.current.content === nextDraftContent) {
-      return;
-    }
+      if (lastSavedRef.current.title === nextTitle && lastSavedRef.current.content === nextDraftContent) {
+        return;
+      }
 
-    setStatus('Saving...');
-    updateNoteTitle(noteId, nextTitle || 'Untitled Note');
-    if (draftEntryId) {
-      useAppStore.getState().updateEntry(draftEntryId, nextDraftContent);
-    } else if (nextContent) {
-      addEntry(noteId, nextDraftContent);
-      const nextEntryId = useAppStore.getState().entries.find((entry) => entry.noteId === noteId)?.id ?? null;
-      setDraftEntryId(nextEntryId);
-    }
+      setStatus('Saving...');
+      updateNoteTitle(noteId, nextTitle || 'Untitled Note');
+      if (draftEntryId) {
+        useAppStore.getState().updateEntry(draftEntryId, nextDraftContent);
+      } else if (nextContent) {
+        addEntry(noteId, nextDraftContent);
+        const nextEntryId =
+          useAppStore.getState().entries.find((entry) => entry.noteId === noteId)?.id ?? null;
+        setDraftEntryId(nextEntryId);
+      }
 
-    setBundle(null);
-    lastSavedRef.current = { title: nextTitle, content: nextDraftContent };
-    setStatus(mode === 'auto' ? 'Saved automatically' : 'Saved');
-    if (mode === 'auto') {
-      setShowSavedToast(true);
-    }
-    await notifyAppStateChanged();
-  }, [addEntry, bundle, draftEntryId, draftTitle, note, noteId, updateNoteTitle]);
+      setBundle(null);
+      lastSavedRef.current = { title: nextTitle, content: nextDraftContent };
+      setStatus(mode === 'auto' ? 'Saved automatically' : 'Saved');
+      if (mode === 'auto') {
+        setShowSavedToast(true);
+      }
+      await notifyAppStateChanged();
+    },
+    [addEntry, bundle, draftEntryId, draftTitle, note, noteId, updateNoteTitle],
+  );
 
-  const saveDraft = React.useCallback((mode: 'auto' | 'manual' = 'manual') => {
-    return saveDraftContent(draftContent, draftTitle, mode);
-  }, [draftContent, draftTitle, saveDraftContent]);
+  const saveDraft = React.useCallback(
+    (mode: 'auto' | 'manual' = 'manual') => {
+      return saveDraftContent(draftContent, draftTitle, mode);
+    },
+    [draftContent, draftTitle, saveDraftContent],
+  );
 
   React.useEffect(() => {
     if (!storeHydrated || !initializedRef.current || (!note && !bundle)) {
@@ -1451,49 +1558,58 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
     void saveDraft('auto');
   }, [saveDraft]);
 
-  const togglePreviewTodo = React.useCallback((occurrenceIndex: number, done: boolean) => {
-    const nextDraftContent = updateTodoStatusInEntryContent(
-      draftContent,
-      occurrenceIndex,
-      done ? 'done' : 'todo',
-    );
-    setDraftContent(nextDraftContent);
-    void saveDraftContent(nextDraftContent, draftTitle, 'auto');
-  }, [draftContent, draftTitle, saveDraftContent]);
-
-  const insertPinnedImage = React.useCallback(async (payload: ClipboardImagePayload, view: EditorView | null) => {
-    isInsertingImageRef.current = true;
-    try {
-      setStatus('Pasting image...');
-      const image = await createMarkdownImageFromPayload(payload);
-      const nextDraftContent = insertMarkdownAtCursorAndGetContent(
-        view,
-        `![${image.altText}](${image.markdownUrl})`,
+  const togglePreviewTodo = React.useCallback(
+    (occurrenceIndex: number, done: boolean) => {
+      const nextDraftContent = updateTodoStatusInEntryContent(
         draftContent,
+        occurrenceIndex,
+        done ? 'done' : 'todo',
       );
       setDraftContent(nextDraftContent);
+      void saveDraftContent(nextDraftContent, draftTitle, 'auto');
+    },
+    [draftContent, draftTitle, saveDraftContent],
+  );
+
+  const insertPinnedImage = React.useCallback(
+    async (payload: ClipboardImagePayload, view: EditorView | null) => {
+      isInsertingImageRef.current = true;
+      try {
+        setStatus('Pasting image...');
+        const image = await createMarkdownImageFromPayload(payload);
+        const nextDraftContent = insertMarkdownAtCursorAndGetContent(
+          view,
+          `![${image.altText}](${image.markdownUrl})`,
+          draftContent,
+        );
+        setDraftContent(nextDraftContent);
+        setIsEditing(true);
+        await saveDraftContent(nextDraftContent, draftTitle, 'auto');
+      } finally {
+        isInsertingImageRef.current = false;
+      }
+    },
+    [draftContent, draftTitle, saveDraftContent],
+  );
+
+  const handlePaste = React.useCallback(
+    (event: React.ClipboardEvent) => {
+      const image = extractClipboardImagePayload(event.nativeEvent);
+      if (!image) {
+        setStatus('Paste ignored: no image found');
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
       setIsEditing(true);
-      await saveDraftContent(nextDraftContent, draftTitle, 'auto');
-    } finally {
-      isInsertingImageRef.current = false;
-    }
-  }, [draftContent, draftTitle, saveDraftContent]);
-
-  const handlePaste = React.useCallback((event: React.ClipboardEvent) => {
-    const image = extractClipboardImagePayload(event.nativeEvent);
-    if (!image) {
-      setStatus('Paste ignored: no image found');
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    setIsEditing(true);
-    void insertPinnedImage(image, editorViewRef.current).catch((error) => {
-      setStatus(`Paste failed: ${errorMessage(error)}`);
-      window.alert(errorMessage(error));
-    });
-  }, [insertPinnedImage]);
+      void insertPinnedImage(image, editorViewRef.current).catch((error) => {
+        setStatus(`Paste failed: ${errorMessage(error)}`);
+        window.alert(errorMessage(error));
+      });
+    },
+    [insertPinnedImage],
+  );
 
   React.useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
@@ -1586,7 +1702,11 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
             <CodeMirror
               value={draftContent}
               height="100%"
-              extensions={[markdown(), EditorView.lineWrapping, imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view))]}
+              extensions={[
+                markdown(),
+                EditorView.lineWrapping,
+                imagePasteExtension((file, view) => insertPinnedImage({ type: 'file', file }, view)),
+              ]}
               basicSetup={{ lineNumbers: false, foldGutter: false }}
               onChange={setDraftContent}
               onCreateEditor={(view) => {
@@ -1621,18 +1741,23 @@ function PinnedNotePreview({
   onDoubleClick: () => void;
   onTodoToggle?: (occurrenceIndex: number, done: boolean) => void;
 }) {
-  const handleTodoChange = React.useCallback((event: React.ChangeEvent<HTMLDivElement>) => {
-    const target = event.target;
-    if (!onTodoToggle || !(target instanceof HTMLInputElement) || target.type !== 'checkbox') {
-      return;
-    }
+  const handleTodoChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLDivElement>) => {
+      const target = event.target;
+      if (!onTodoToggle || !(target instanceof HTMLInputElement) || target.type !== 'checkbox') {
+        return;
+      }
 
-    const checkboxes = Array.from(event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
-    const occurrenceIndex = checkboxes.indexOf(target);
-    if (occurrenceIndex >= 0) {
-      onTodoToggle(occurrenceIndex, target.checked);
-    }
-  }, [onTodoToggle]);
+      const checkboxes = Array.from(
+        event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+      );
+      const occurrenceIndex = checkboxes.indexOf(target);
+      if (occurrenceIndex >= 0) {
+        onTodoToggle(occurrenceIndex, target.checked);
+      }
+    },
+    [onTodoToggle],
+  );
 
   return (
     <div className="pinned-note-preview min-h-full" onChange={handleTodoChange} onDoubleClick={onDoubleClick}>
@@ -1699,17 +1824,35 @@ function WorkspaceToolbar({
         {onExport || onPin || (mode === 'edit' && onInsertImage) ? (
           <div className="toolbar-group">
             {onExport ? (
-              <button type="button" className="icon-button tooltip-button" data-tooltip="Export" onClick={onExport} aria-label="Export note">
+              <button
+                type="button"
+                className="icon-button tooltip-button"
+                data-tooltip="Export"
+                onClick={onExport}
+                aria-label="Export note"
+              >
                 <Download className="h-4 w-4" />
               </button>
             ) : null}
             {onPin ? (
-              <button type="button" className="icon-button tooltip-button" data-tooltip="Pin" onClick={onPin} aria-label="Pin note">
+              <button
+                type="button"
+                className="icon-button tooltip-button"
+                data-tooltip="Pin"
+                onClick={onPin}
+                aria-label="Pin note"
+              >
                 <Pin className="h-4 w-4" />
               </button>
             ) : null}
             {mode === 'edit' && onInsertImage ? (
-              <button type="button" className="icon-button tooltip-button" data-tooltip="Image" onClick={onInsertImage} aria-label="Insert image">
+              <button
+                type="button"
+                className="icon-button tooltip-button"
+                data-tooltip="Image"
+                onClick={onInsertImage}
+                aria-label="Insert image"
+              >
                 <ImageIcon className="h-4 w-4" />
               </button>
             ) : null}
@@ -1729,12 +1872,24 @@ function WorkspaceToolbar({
                 <Save className="h-4 w-4" />
               </button>
             ) : (
-              <button type="button" className="icon-button icon-button-primary tooltip-button" data-tooltip={tooltip('Edit', 'edit')} onClick={onEdit} aria-label="Edit note">
+              <button
+                type="button"
+                className="icon-button icon-button-primary tooltip-button"
+                data-tooltip={tooltip('Edit', 'edit')}
+                onClick={onEdit}
+                aria-label="Edit note"
+              >
                 <FilePenLine className="h-4 w-4" />
               </button>
             )}
             {mode === 'edit' && onCancel ? (
-              <button type="button" className="icon-button tooltip-button" data-tooltip={tooltip('Cancel', 'cancel')} onClick={onCancel} aria-label="Cancel editing">
+              <button
+                type="button"
+                className="icon-button tooltip-button"
+                data-tooltip={tooltip('Cancel', 'cancel')}
+                onClick={onCancel}
+                aria-label="Cancel editing"
+              >
                 <X className="h-4 w-4" />
               </button>
             ) : null}
@@ -1742,7 +1897,13 @@ function WorkspaceToolbar({
         ) : null}
         {onDelete ? (
           <div className="toolbar-group toolbar-group-danger">
-            <button type="button" className="icon-button icon-button-danger tooltip-button tooltip-align-end" data-tooltip={tooltip('Delete', 'delete')} onClick={onDelete} aria-label="Delete note">
+            <button
+              type="button"
+              className="icon-button icon-button-danger tooltip-button tooltip-align-end"
+              data-tooltip={tooltip('Delete', 'delete')}
+              onClick={onDelete}
+              aria-label="Delete note"
+            >
               <Trash2 className="h-4 w-4" />
             </button>
           </div>
@@ -1918,9 +2079,7 @@ type MarkdownImage = {
   markdownUrl: string;
 };
 
-type ClipboardImagePayload =
-  | { type: 'file'; file: File }
-  | { type: 'path'; path: string };
+type ClipboardImagePayload = { type: 'file'; file: File } | { type: 'path'; path: string };
 
 type NoteBundleData = {
   schemaVersion?: number;
@@ -2020,106 +2179,11 @@ async function createMarkdownImageFromPayload(payload: ClipboardImagePayload): P
   return stored;
 }
 
-function imageExtensionFromMimeType(mimeType: string) {
-  switch (mimeType) {
-    case 'image/jpeg':
-      return 'jpg';
-    case 'image/webp':
-      return 'webp';
-    case 'image/gif':
-      return 'gif';
-    case 'image/bmp':
-      return 'bmp';
-    case 'image/svg+xml':
-      return 'svg';
-    default:
-      return 'png';
-  }
-}
-
-function mimeTypeFromFileName(fileName: string) {
-  switch (extractFileExtension(fileName).toLowerCase()) {
-    case 'jpg':
-    case 'jpeg':
-      return 'image/jpeg';
-    case 'png':
-      return 'image/png';
-    case 'webp':
-      return 'image/webp';
-    case 'gif':
-      return 'image/gif';
-    case 'bmp':
-      return 'image/bmp';
-    case 'svg':
-      return 'image/svg+xml';
-    default:
-      return 'image/png';
-  }
-}
-
-function extractAltText(fileName: string) {
-  return fileName.replace(/\.[^.]+$/, '') || 'image';
-}
-
-function extractFileName(path: string) {
-  return path.split(/[\\/]/).pop() ?? path;
-}
-
-function extractFileExtension(fileName: string) {
-  const index = fileName.lastIndexOf('.');
-  if (index < 0 || index === fileName.length - 1) return '';
-  return fileName.slice(index + 1).toLowerCase();
-}
-
-function extractAttachmentReferences(content: string) {
-  const refs: string[] = [];
-  let remaining = content;
-
-  while (true) {
-    const index = remaining.indexOf('attachment://');
-    if (index < 0) break;
-
-    const after = remaining.slice(index + 'attachment://'.length);
-    const match = after.match(/^[A-Za-z0-9._-]+/);
-    if (match?.[0]) {
-      refs.push(match[0]);
-      remaining = after.slice(match[0].length);
-    } else {
-      remaining = after.slice(1);
-    }
-  }
-
-  return refs;
-}
-
-function formatAttachmentTime(value: string) {
-  if (!value) return 'Unknown time';
-  const timestamp = Number(value);
-  if (Number.isFinite(timestamp)) {
-    return new Intl.DateTimeFormat(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(timestamp * 1000));
-  }
-
-  return value;
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB'];
-  let size = bytes / 1024;
-  let unitIndex = 0;
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
-    unitIndex += 1;
-  }
-  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
-}
-
-function mergeDraftEntries(entries: Array<{ id: string; content: string }>, draftEntryId: string | null, draftContent: string) {
+function mergeDraftEntries(
+  entries: Array<{ id: string; content: string }>,
+  draftEntryId: string | null,
+  draftContent: string,
+) {
   if (!draftContent.trim()) {
     return entries.map((entry) => entry.content);
   }
@@ -2129,30 +2193,6 @@ function mergeDraftEntries(entries: Array<{ id: string; content: string }>, draf
   }
 
   return entries.length === 0 ? [draftContent] : [draftContent, ...entries.map((entry) => entry.content)];
-}
-
-function buildNoteMarkdown(title: string, entryContents: string[]) {
-  const lines = [`# ${displayTitle(title)}`];
-  if (entryContents.length > 0) {
-    lines.push('');
-    entryContents.forEach((content, index) => {
-      lines.push(content.replace(/\s+$/, ''));
-      if (index < entryContents.length - 1) {
-        lines.push('', '---', '');
-      }
-    });
-  }
-
-  return lines.join('\n').trimEnd() + '\n';
-}
-
-function buildExportFileName(title: string) {
-  const normalized = displayTitle(title)
-    .replace(/[\\/:*?"<>|]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const safe = normalized || 'Untitled Note';
-  return `${safe}.md`;
 }
 
 function downloadTextFile(content: string, fileName: string, mimeType: string) {
@@ -2165,48 +2205,15 @@ function downloadTextFile(content: string, fileName: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
-function markdownUrlTransform(url: string) {
-  if (url.startsWith('data:image/')) {
-    return url;
-  }
-
-  if (url.startsWith('blob:')) {
-    return url;
-  }
-
-  if (url.startsWith('attachment://')) {
-    return url;
-  }
-
-  const colon = url.indexOf(':');
-  const questionMark = url.indexOf('?');
-  const numberSign = url.indexOf('#');
-  const slash = url.indexOf('/');
-
-  if (
-    colon === -1 ||
-    (slash !== -1 && colon > slash) ||
-    (questionMark !== -1 && colon > questionMark) ||
-    (numberSign !== -1 && colon > numberSign)
-  ) {
-    return url;
-  }
-
-  const protocol = url.slice(0, colon).toLowerCase();
-  if (['http', 'https', 'mailto', 'xmpp', 'irc', 'ircs'].includes(protocol)) {
-    return url;
-  }
-
-  return '';
-}
-
 function insertMarkdownAtCursor(
   view: EditorView | null,
   text: string,
   fallbackUpdate: React.Dispatch<React.SetStateAction<string>>,
 ) {
   if (!view || !view.dom.isConnected) {
-    fallbackUpdate((current) => `${current}${current.endsWith('\n') || current.length === 0 ? '' : '\n'}${text}`);
+    fallbackUpdate(
+      (current) => `${current}${current.endsWith('\n') || current.length === 0 ? '' : '\n'}${text}`,
+    );
     return;
   }
 
@@ -2295,15 +2302,8 @@ function isClipboardImageFile(file: File, itemType: string) {
   return isImageFileName(file.name);
 }
 
-function isImageFileName(fileName: string) {
-  return ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(extractFileExtension(fileName));
-}
-
 function extractClipboardImagePath(data: DataTransfer) {
-  const candidates = [
-    ...data.getData('text/uri-list').split(/\r?\n/),
-    data.getData('text/plain'),
-  ];
+  const candidates = [...data.getData('text/uri-list').split(/\r?\n/), data.getData('text/plain')];
 
   for (const candidate of candidates) {
     const path = normalizeClipboardImagePath(candidate);
@@ -2313,24 +2313,6 @@ function extractClipboardImagePath(data: DataTransfer) {
   }
 
   return null;
-}
-
-function normalizeClipboardImagePath(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.startsWith('#')) {
-    return '';
-  }
-
-  if (trimmed.startsWith('file://')) {
-    try {
-      const url = new URL(trimmed);
-      return decodeURIComponent(url.pathname);
-    } catch {
-      return decodeURIComponent(trimmed.replace(/^file:\/\//, ''));
-    }
-  }
-
-  return trimmed;
 }
 
 async function insertImageFile(
@@ -2372,7 +2354,8 @@ async function readFileAsOptimizedDataUrl(file: File) {
   context.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
 
-  const mime = file.type === 'image/png' ? 'image/png' : file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+  const mime =
+    file.type === 'image/png' ? 'image/png' : file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
   const quality = mime === 'image/png' ? undefined : 0.82;
   return canvas.toDataURL(mime, quality);
 }
@@ -2412,10 +2395,7 @@ function EntryCard({ entryId }: { entryId: string }) {
   const entry = useAppStore((state) => state.entries.find((item) => item.id === entryId));
   const allTodos = useAppStore((state) => state.todos);
   const toggleTodo = useAppStore((state) => state.toggleTodo);
-  const todos = React.useMemo(
-    () => allTodos.filter((todo) => todo.entryId === entryId),
-    [allTodos, entryId],
-  );
+  const todos = React.useMemo(() => allTodos.filter((todo) => todo.entryId === entryId), [allTodos, entryId]);
 
   if (!entry) return null;
 
@@ -2444,14 +2424,19 @@ function EntryCard({ entryId }: { entryId: string }) {
           <div className="my-2 border-t border-slate-300" />
           <div className="space-y-2">
             {todos.map((todo) => (
-              <label key={todo.id} className="flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-50">
+              <label
+                key={todo.id}
+                className="flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-50"
+              >
                 <input
                   type="checkbox"
                   checked={todo.status === 'done'}
                   onChange={(event) => toggleTodo(todo.id, event.target.checked)}
                   className="mt-1"
                 />
-                <span className={todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-700'}>{todo.title}</span>
+                <span className={todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-700'}>
+                  {todo.title}
+                </span>
               </label>
             ))}
           </div>
@@ -2471,10 +2456,7 @@ function TodosPage() {
 
   const todoGroups = React.useMemo(() => {
     const notesById = new Map(notes.map((note) => [note.id, note]));
-    const groups = new Map<
-      string,
-      { key: string; noteId?: string; title: string; todos: typeof todos }
-    >();
+    const groups = new Map<string, { key: string; noteId?: string; title: string; todos: typeof todos }>();
 
     todos.forEach((todo) => {
       const key = todo.noteId ?? 'standalone';
@@ -2508,11 +2490,14 @@ function TodosPage() {
     [selectNote],
   );
 
-  const removeTodo = React.useCallback(async (todoId: string) => {
-    if (await confirmDeletion('Delete this ToDo item?')) {
-      deleteTodo(todoId);
-    }
-  }, [deleteTodo]);
+  const removeTodo = React.useCallback(
+    async (todoId: string) => {
+      if (await confirmDeletion('Delete this ToDo item?')) {
+        deleteTodo(todoId);
+      }
+    },
+    [deleteTodo],
+  );
 
   const toggleCompletedGroup = React.useCallback((groupKey: string) => {
     setExpandedCompletedGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
@@ -2528,7 +2513,8 @@ function TodosPage() {
             const activeTodos = group.todos.filter((todo) => todo.status !== 'done');
             const completedTodos = group.todos.filter((todo) => todo.status === 'done');
             const completedCount = completedTodos.length;
-            const showCompleted = completedCount > 0 && (activeTodos.length === 0 || expandedCompletedGroups[group.key]);
+            const showCompleted =
+              completedCount > 0 && (activeTodos.length === 0 || expandedCompletedGroups[group.key]);
             const visibleTodos = showCompleted ? [...activeTodos, ...completedTodos] : activeTodos;
             return (
               <section key={group.key} className="todo-source-card content-card overflow-hidden rounded-xl">
@@ -2544,19 +2530,28 @@ function TodosPage() {
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
                       <span className="truncate text-sm font-semibold text-slate-900">{group.title}</span>
-                      {group.noteId ? <ChevronRight className="todo-source-card-arrow h-3.5 w-3.5 shrink-0" /> : null}
+                      {group.noteId ? (
+                        <ChevronRight className="todo-source-card-arrow h-3.5 w-3.5 shrink-0" />
+                      ) : null}
                     </span>
                     <span className="mt-0.5 block text-xs text-slate-500">
-                      {group.noteId ? 'Source note' : 'Personal task'} · {completedCount}/{group.todos.length} completed
+                      {group.noteId ? 'Source note' : 'Personal task'} · {completedCount}/{group.todos.length}{' '}
+                      completed
                     </span>
                   </span>
                   <span className="note-todo-count rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
                     {group.todos.length}
                   </span>
                 </button>
-                <div className="todo-source-card-items space-y-1 p-2" aria-label={`${completedCount} of ${group.todos.length} tasks completed`}>
+                <div
+                  className="todo-source-card-items space-y-1 p-2"
+                  aria-label={`${completedCount} of ${group.todos.length} tasks completed`}
+                >
                   {visibleTodos.map((todo) => (
-                    <div key={todo.id} className="todo-source-card-item flex items-start gap-3 rounded-md px-2 py-2">
+                    <div
+                      key={todo.id}
+                      className="todo-source-card-item flex items-start gap-3 rounded-md px-2 py-2"
+                    >
                       <input
                         type="checkbox"
                         checked={todo.status === 'done'}
@@ -2564,7 +2559,9 @@ function TodosPage() {
                         className="mt-0.5 shrink-0"
                       />
                       <div className="min-w-0 flex-1">
-                        <div className={`text-sm font-medium ${todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                        <div
+                          className={`text-sm font-medium ${todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-900'}`}
+                        >
                           {todo.title}
                         </div>
                       </div>
@@ -2585,8 +2582,12 @@ function TodosPage() {
                     className="todo-completed-toggle flex w-full items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-medium"
                     onClick={() => toggleCompletedGroup(group.key)}
                   >
-                    <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showCompleted ? 'rotate-180' : ''}`} />
-                    {showCompleted ? 'Hide completed tasks' : `Show ${completedTodos.length} completed task${completedTodos.length === 1 ? '' : 's'}`}
+                    <ChevronDown
+                      className={`h-3.5 w-3.5 transition-transform ${showCompleted ? 'rotate-180' : ''}`}
+                    />
+                    {showCompleted
+                      ? 'Hide completed tasks'
+                      : `Show ${completedTodos.length} completed task${completedTodos.length === 1 ? '' : 's'}`}
                   </button>
                 ) : null}
               </section>
@@ -2651,7 +2652,9 @@ function ImagesPage() {
 
   const copyReference = React.useCallback(async (fileName: string) => {
     try {
-      await navigator.clipboard.writeText(`![${fileName.replace(/\.[^.]+$/, '') || 'image'}](attachment://${fileName})`);
+      await navigator.clipboard.writeText(
+        `![${fileName.replace(/\.[^.]+$/, '') || 'image'}](attachment://${fileName})`,
+      );
     } catch (currentError) {
       window.alert(errorMessage(currentError));
     }
@@ -2694,25 +2697,41 @@ function ImagesPage() {
         ) : error ? (
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
         ) : attachments.length === 0 ? (
-          <EmptyMessage title="No uploaded images" message="Use the image button or paste an image into a note." icon={ImageIcon} />
+          <EmptyMessage
+            title="No uploaded images"
+            message="Use the image button or paste an image into a note."
+            icon={ImageIcon}
+          />
         ) : (
           <div className="space-y-2">
             {attachments.map((item) => {
               const usageCount = attachmentUsage.get(item.fileName) ?? 0;
               return (
-                <div key={item.fileName} className="content-card flex items-center gap-3 rounded-lg px-3 py-2">
+                <div
+                  key={item.fileName}
+                  className="content-card flex items-center gap-3 rounded-lg px-3 py-2"
+                >
                   <button
                     className="flex-none h-11 w-11 overflow-hidden rounded-md"
                     onClick={() => setViewerFileName(item.originalFileName)}
                     title="View original image"
                     aria-label={`View ${item.fileName}`}
                   >
-                    <AttachmentPreviewImage fileName={item.fileName} alt={item.fileName} className="h-full w-full object-cover" />
+                    <AttachmentPreviewImage
+                      fileName={item.fileName}
+                      alt={item.fileName}
+                      className="h-full w-full object-cover"
+                    />
                   </button>
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-slate-900" title={item.fileName}>{item.fileName}</div>
+                    <div className="truncate text-sm font-medium text-slate-900" title={item.fileName}>
+                      {item.fileName}
+                    </div>
                     <div className="mt-0.5 truncate text-xs text-slate-500">
-                      {formatBytes(item.size)} · {formatAttachmentTime(item.modifiedAt)} · {usageCount > 0 ? `${usageCount} reference${usageCount === 1 ? '' : 's'}` : 'Not referenced'}
+                      {formatBytes(item.size)} · {formatAttachmentTime(item.modifiedAt)} ·{' '}
+                      {usageCount > 0
+                        ? `${usageCount} reference${usageCount === 1 ? '' : 's'}`
+                        : 'Not referenced'}
                     </div>
                   </div>
                   <div className="flex flex-none items-center gap-1">
@@ -2745,7 +2764,10 @@ function ImagesPage() {
           onClick={closeViewer}
           role="presentation"
         >
-          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col gap-3 rounded-lg bg-slate-900 p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div
+            className="flex max-h-[92vh] w-full max-w-6xl flex-col gap-3 rounded-lg bg-slate-900 p-4 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium text-slate-100">{viewerFileName}</div>
@@ -2774,7 +2796,9 @@ function ImagesPage() {
 function SearchResultsPage({ query }: { query: string }) {
   const selectNote = useAppStore((state) => state.selectNote);
   const setQuery = useAppStore((state) => state.setQuery);
-  const [results, setResults] = React.useState<Array<{ noteId: string; title: string; updatedAt: string; preview: string }>>([]);
+  const [results, setResults] = React.useState<
+    Array<{ noteId: string; title: string; updatedAt: string; preview: string }>
+  >([]);
   const normalizedQuery = query.trim();
 
   React.useEffect(() => {
@@ -2809,12 +2833,23 @@ function SearchResultsPage({ query }: { query: string }) {
   }, [normalizedQuery]);
 
   return (
-    <Page title="Search" subtitle={normalizedQuery ? `Results for "${query}"` : 'Type to search notes and ToDos'}>
+    <Page
+      title="Search"
+      subtitle={normalizedQuery ? `Results for "${query}"` : 'Type to search notes and ToDos'}
+    >
       <div className="mx-auto w-full max-w-4xl space-y-5">
         {!normalizedQuery ? (
-          <EmptyMessage title="Search your notes" message="Type in the search box to see matching notes, entries, and ToDos." icon={Search} />
+          <EmptyMessage
+            title="Search your notes"
+            message="Type in the search box to see matching notes, entries, and ToDos."
+            icon={Search}
+          />
         ) : results.length === 0 ? (
-          <EmptyMessage title="No matches" message="Try searching by note title, entry content, or ToDo text." icon={Search} />
+          <EmptyMessage
+            title="No matches"
+            message="Try searching by note title, entry content, or ToDo text."
+            icon={Search}
+          />
         ) : null}
 
         {results.length > 0 ? (
@@ -2867,10 +2902,7 @@ function SettingsPage() {
               const Icon = item.icon;
               const active = theme === item.id;
               return (
-                <label
-                  key={item.id}
-                  className={`theme-choice ${active ? 'theme-choice-active' : ''}`}
-                >
+                <label key={item.id} className={`theme-choice ${active ? 'theme-choice-active' : ''}`}>
                   <input
                     type="radio"
                     name="theme"
@@ -2932,27 +2964,30 @@ function BackupSettings() {
     }
   }, []);
 
-  const importBackup = React.useCallback(async (file: File | null) => {
-    if (!file) return;
-    setStatus('');
-    setError('');
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text) as Partial<AppStateSnapshot>;
-      const snapshot = normalizeImportedSnapshot(parsed);
-      if (!window.confirm('Import will replace the current data set. Continue?')) {
-        return;
+  const importBackup = React.useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      setStatus('');
+      setError('');
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text) as Partial<AppStateSnapshot>;
+        const snapshot = normalizeImportedSnapshot(parsed);
+        if (!window.confirm('Import will replace the current data set. Continue?')) {
+          return;
+        }
+        replaceAppState(snapshot);
+        setStatus('Backup imported.');
+      } catch (currentError) {
+        setError(errorMessage(currentError));
+      } finally {
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
       }
-      replaceAppState(snapshot);
-      setStatus('Backup imported.');
-    } catch (currentError) {
-      setError(errorMessage(currentError));
-    } finally {
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
-  }, [replaceAppState]);
+    },
+    [replaceAppState],
+  );
 
   return (
     <div className="content-card rounded-lg p-5">
@@ -3094,14 +3129,16 @@ function StorageSettings() {
             </div>
           </label>
           <div className="text-xs text-slate-500">
-            Choose a folder to save it immediately. Current folder: <span className="font-mono text-slate-700">{storageInfo?.path ?? 'Loading...'}</span>
+            Choose a folder to save it immediately. Current folder:{' '}
+            <span className="font-mono text-slate-700">{storageInfo?.path ?? 'Loading...'}</span>
           </div>
           {status ? <div className="text-sm text-green-700">{status}</div> : null}
           {error ? <div className="text-sm text-red-600">{error}</div> : null}
         </div>
       ) : (
         <p className="mt-2 text-sm text-slate-500">
-          Browser preview uses localStorage. Configurable storage folders are available in the Tauri desktop app.
+          Browser preview uses localStorage. Configurable storage folders are available in the Tauri desktop
+          app.
         </p>
       )}
     </div>
@@ -3113,12 +3150,16 @@ function HelpPage() {
     <Page title="Help" subtitle="Minimum usage guide">
       <div className="content-card mx-auto w-full max-w-2xl rounded-lg p-5">
         <div className="font-medium">Markdown ToDo</div>
-        <pre className="mt-3 rounded-md bg-slate-950 p-4 text-sm text-slate-50">{'- [ ] incomplete task\n- [x] completed task'}</pre>
+        <pre className="mt-3 rounded-md bg-slate-950 p-4 text-sm text-slate-50">
+          {'- [ ] incomplete task\n- [x] completed task'}
+        </pre>
         <div className="mt-5 font-medium">Images</div>
         <p className="mt-2 text-sm text-slate-500">
           Use the image button in edit mode to insert a local image, or write markdown directly:
         </p>
-        <pre className="mt-3 rounded-md bg-slate-950 p-4 text-sm text-slate-50">{'![alt text](data:image/png;base64,...)'}</pre>
+        <pre className="mt-3 rounded-md bg-slate-950 p-4 text-sm text-slate-50">
+          {'![alt text](data:image/png;base64,...)'}
+        </pre>
       </div>
     </Page>
   );
@@ -3182,7 +3223,15 @@ function ShortcutInput({
   );
 }
 
-function Page({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+function Page({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="app-page flex min-h-0 flex-1 flex-col">
       <PageHeader title={title} subtitle={subtitle} />
@@ -3208,23 +3257,27 @@ function PageHeader({
   );
 }
 
-function MarkdownContent({ content, enableTaskCheckboxes = false }: { content: string; enableTaskCheckboxes?: boolean }) {
+function MarkdownContent({
+  content,
+  enableTaskCheckboxes = false,
+}: {
+  content: string;
+  enableTaskCheckboxes?: boolean;
+}) {
   const components = enableTaskCheckboxes
     ? {
         img: MarkdownImageElement,
-        input: ({ node: _node, disabled: _disabled, ...props }: React.ComponentProps<'input'> & { node?: unknown }) => (
-          <input {...props} disabled={false} />
-        ),
+        input: ({
+          node: _node,
+          disabled: _disabled,
+          ...props
+        }: React.ComponentProps<'input'> & { node?: unknown }) => <input {...props} disabled={false} />,
       }
     : { img: MarkdownImageElement };
 
   return (
     <div className="markdown-content">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={markdownUrlTransform}
-        components={components}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform} components={components}>
         {content}
       </ReactMarkdown>
     </div>
@@ -3305,6 +3358,8 @@ function useAttachmentObjectUrl(fileName?: string, fallbackFileName?: string) {
           return;
         }
       } catch {
+        // Loading the primary attachment failed; fall through to the legacy
+        // fallback candidates below.
       }
 
       if (await loadFallbacks(attachmentFallbackCandidates(fileName, fallbackFileName))) {
@@ -3329,13 +3384,7 @@ function useAttachmentObjectUrl(fileName?: string, fallbackFileName?: string) {
   return src;
 }
 
-function MarkdownImageElement({
-  src,
-  alt,
-}: {
-  src?: string;
-  alt?: string;
-}) {
+function MarkdownImageElement({ src, alt }: { src?: string; alt?: string }) {
   const attachmentFileName = src?.startsWith('attachment://') ? src.slice('attachment://'.length) : undefined;
   const attachmentSrc = useAttachmentObjectUrl(attachmentFileName);
 
@@ -3352,28 +3401,6 @@ function MarkdownImageElement({
   }
 
   return <img alt={alt ?? ''} src={attachmentSrc} loading="lazy" />;
-}
-
-function attachmentFallbackCandidates(fileName?: string, fallbackFileName?: string) {
-  const candidates: string[] = [];
-
-  if (fallbackFileName && fallbackFileName !== fileName) {
-    candidates.push(fallbackFileName);
-  }
-
-  if (fileName) {
-    const previewIndex = fileName.indexOf('.preview.');
-    if (previewIndex > 0) {
-      const base = fileName.slice(0, previewIndex);
-      const currentExt = extractFileExtension(fileName);
-      const extensions = [currentExt, 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].filter(Boolean);
-      for (const ext of extensions) {
-        candidates.push(`${base}.original.${ext}`);
-      }
-    }
-  }
-
-  return Array.from(new Set(candidates));
 }
 
 function EmptyMessage({
@@ -3426,16 +3453,6 @@ function useFilteredTodos() {
 
 function formatDate(value: string) {
   return formatCompactDateTime(value);
-}
-
-function displayTitle(title: string) {
-  return title.trim() || 'Untitled Note';
-}
-
-function titleFromFirstLine(content: string) {
-  const firstLine = content.split('\n')[0]?.trim() ?? '';
-  const title = firstLine.replace(/^[^\p{L}\p{N}]+/u, '').trim();
-  return title.slice(0, 80);
 }
 
 function formatTime(value: string) {
@@ -3501,9 +3518,14 @@ function matchesShortcut(event: KeyboardEvent, shortcut: string) {
 }
 
 function parseShortcut(shortcut: string) {
-  const parts = shortcut.split('+').map((part) => part.trim()).filter(Boolean);
+  const parts = shortcut
+    .split('+')
+    .map((part) => part.trim())
+    .filter(Boolean);
   return {
-    primary: parts.some((part) => ['mod', 'cmd', 'command', 'meta', 'ctrl', 'control'].includes(part.toLowerCase())),
+    primary: parts.some((part) =>
+      ['mod', 'cmd', 'command', 'meta', 'ctrl', 'control'].includes(part.toLowerCase()),
+    ),
     shift: parts.some((part) => part.toLowerCase() === 'shift'),
     alt: parts.some((part) => part.toLowerCase() === 'alt' || part.toLowerCase() === 'option'),
     key: normalizeKey(parts[parts.length - 1] ?? ''),
@@ -3607,7 +3629,11 @@ async function confirmDeletion(message: string) {
   });
 }
 
-function summarizeNotePreview(noteId: string, entries: ReturnType<typeof useAppStore.getState>['entries'], todos: ReturnType<typeof useAppStore.getState>['todos']) {
+function summarizeNotePreview(
+  noteId: string,
+  entries: ReturnType<typeof useAppStore.getState>['entries'],
+  todos: ReturnType<typeof useAppStore.getState>['todos'],
+) {
   const noteEntries = entries.filter((entry) => entry.noteId === noteId);
   const firstTextEntry = noteEntries.find((entry) => entry.content.trim());
   const todoCount = todos.filter((todo) => todo.noteId === noteId).length;

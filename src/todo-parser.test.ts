@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseTodosFromEntry, removeTodoFromEntryContent, updateTodoStatusInEntryContent } from './todo-parser';
+import {
+  parseTodosFromEntry,
+  removeTodoFromEntryContent,
+  updateTodoStatusInEntryContent,
+} from './todo-parser';
 
 describe('parseTodosFromEntry', () => {
   it('extracts markdown todo lines', () => {
@@ -26,7 +30,9 @@ describe('updateTodoStatusInEntryContent', () => {
   });
 
   it('uses occurrence order for duplicate titles', () => {
-    expect(updateTodoStatusInEntryContent('- [ ] Same\n- [ ] Same', 1, 'done')).toBe('- [ ] Same\n- [x] Same');
+    expect(updateTodoStatusInEntryContent('- [ ] Same\n- [ ] Same', 1, 'done')).toBe(
+      '- [ ] Same\n- [x] Same',
+    );
   });
 });
 

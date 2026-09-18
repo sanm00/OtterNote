@@ -1,8 +1,13 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { createId } from './id';
+import { titleFromFirstLine } from './lib/markdown';
 import { appStorage } from './storage';
-import { parseTodosFromEntry, removeTodoFromEntryContent, updateTodoStatusInEntryContent } from './todo-parser';
+import {
+  parseTodosFromEntry,
+  removeTodoFromEntryContent,
+  updateTodoStatusInEntryContent,
+} from './todo-parser';
 
 export type NavSection = 'new' | 'notes' | 'todos' | 'timeline' | 'images' | 'settings' | 'help';
 export type TodoStatus = 'todo' | 'done';
@@ -307,7 +312,7 @@ export const useAppStore = create<AppState>()(
               updatedAt: now,
               completedAt:
                 (reusable?.status ?? parsedTodo.status) === 'done'
-                  ? reusable?.completedAt ?? now
+                  ? (reusable?.completedAt ?? now)
                   : undefined,
             };
           });
@@ -316,10 +321,7 @@ export const useAppStore = create<AppState>()(
             entries: state.entries.map((entry) =>
               entry.id === entryId ? { ...entry, content, updatedAt: now } : entry,
             ),
-            todos: [
-              ...updatedTodos,
-              ...state.todos.filter((todo) => todo.entryId !== entryId),
-            ],
+            todos: [...updatedTodos, ...state.todos.filter((todo) => todo.entryId !== entryId)],
             notes: state.notes.map((note) =>
               note.id === existingEntry.noteId ? { ...note, updatedAt: now } : note,
             ),
@@ -337,9 +339,7 @@ export const useAppStore = create<AppState>()(
           return {
             entries: state.entries.filter((item) => item.id !== entryId),
             todos: state.todos.filter((todo) => todo.entryId !== entryId),
-            notes: state.notes.map((note) =>
-              note.id === entry.noteId ? { ...note, updatedAt: now } : note,
-            ),
+            notes: state.notes.map((note) => (note.id === entry.noteId ? { ...note, updatedAt: now } : note)),
             deletedStack: [
               {
                 type: 'entry',
@@ -487,10 +487,7 @@ export const useAppStore = create<AppState>()(
                 ...snapshot.entries,
                 ...state.entries.filter((entry) => entry.noteId !== snapshot.note.id),
               ],
-              todos: [
-                ...snapshot.todos,
-                ...state.todos.filter((todo) => todo.noteId !== snapshot.note.id),
-              ],
+              todos: [...snapshot.todos, ...state.todos.filter((todo) => todo.noteId !== snapshot.note.id)],
               selectedNoteId: snapshot.note.id,
               activeSection: 'notes',
               recentNoteIds: snapshot.recentNoteIds,
@@ -501,10 +498,7 @@ export const useAppStore = create<AppState>()(
           if (snapshot.type === 'entry') {
             return {
               entries: [snapshot.entry, ...state.entries.filter((entry) => entry.id !== snapshot.entry.id)],
-              todos: [
-                ...snapshot.todos,
-                ...state.todos.filter((todo) => todo.entryId !== snapshot.entry.id),
-              ],
+              todos: [...snapshot.todos, ...state.todos.filter((todo) => todo.entryId !== snapshot.entry.id)],
               selectedNoteId: snapshot.entry.noteId,
               activeSection: 'notes',
               deletedStack: rest,
@@ -521,7 +515,12 @@ export const useAppStore = create<AppState>()(
     {
       name: 'otter-note-store',
       storage: createJSONStorage(() => appStorage),
-      partialize: ({ activeSection: _activeSection, query: _query, searchFocused: _searchFocused, ...state }) => state,
+      partialize: ({
+        activeSection: _activeSection,
+        query: _query,
+        searchFocused: _searchFocused,
+        ...state
+      }) => state,
       merge: (persistedState, currentState) => ({
         ...currentState,
         ...(() => {
@@ -561,20 +560,9 @@ export function snapshotAppState(state: AppState): AppStateSnapshot {
   };
 }
 
-function firstTitleFromContent(content: string) {
-  const firstLine = content.split('\n')[0]?.trim() ?? '';
-  const title = firstLine.replace(/^[^\p{L}\p{N}]+/u, '').trim();
-
-  if (!title) {
-    return 'Untitled Note';
-  }
-
-  return title.slice(0, 80);
-}
-
 function buildNoteFromContent(state: AppState, content: string, explicitTitle?: string) {
   const now = new Date().toISOString();
-  const title = explicitTitle?.trim() || firstTitleFromContent(content);
+  const title = explicitTitle?.trim() || titleFromFirstLine(content) || 'Untitled Note';
   const note: Note = {
     id: createId('note'),
     title,
