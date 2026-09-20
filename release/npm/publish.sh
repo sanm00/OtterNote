@@ -1,5 +1,6 @@
 #!/bin/sh
-# Publish packages/npm-cli to npm, in the order that is actually safe.
+# Build and publish the generated npm installer package to npm, in the order
+# that is actually safe.
 #
 # The npm package downloads a GitHub release during installation, so publishing
 # it before the release exists would hand users a broken install. This script
@@ -9,11 +10,11 @@
 # Version numbers are never rewritten here: src-tauri/tauri.conf.json is the
 # source of truth and is bumped as part of normal development, then tagged.
 #
-# Usage: sh scripts/npm-release.sh [--dry-run] [--yes] [--skip-gates] [--help]
+# Usage: sh release/npm/publish.sh [--dry-run] [--yes] [--skip-gates] [--help]
 
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 DRY_RUN=0
 ASSUME_YES=0
 SKIP_GATES=0
@@ -29,7 +30,7 @@ usage() {
   cat <<'EOF'
 Publish the OtterNote npm installer package.
 
-  sh scripts/npm-release.sh [options]
+  sh release/npm/publish.sh [options]
 
 Options:
   --dry-run      run every check and show the tarball, but do not publish
@@ -94,16 +95,16 @@ fi
 [ "$branch" = main ] || info "warning: not on main; the release tag and this package may disagree"
 
 VERSION=$(node -p "JSON.parse(require('fs').readFileSync('$ROOT/src-tauri/tauri.conf.json','utf8')).version")
-REPO=$(sed -n 's/^REPO="\(.*\)"/\1/p' "$ROOT/scripts/install.sh" | head -1)
+REPO=$(sed -n 's/^REPO="\(.*\)"/\1/p' "$ROOT/release/install/install.sh" | head -1)
 [ -n "$VERSION" ] || die "could not read the version from src-tauri/tauri.conf.json"
-[ -n "$REPO" ] || die "could not read the repository slug from scripts/install.sh"
+[ -n "$REPO" ] || die "could not read the repository slug from release/install/install.sh"
 info "version: $VERSION (from src-tauri/tauri.conf.json)"
 info "repository: $REPO"
 
 # --- 2. consistency gate ----------------------------------------------------
 
 run_gate "Consistency (versions, asset names, install dirs, package contents)" \
-  node scripts/check-npm-release.mjs
+  node release/npm/verify.mjs
 
 # --- 3. quality gates -------------------------------------------------------
 
@@ -157,24 +158,30 @@ case "$status" in
     ;;
 esac
 
-# --- 5. what would be published ---------------------------------------------
+# --- 5. assemble the npm package ---------------------------------------------
+
+step "Assemble npm package"
+node "$ROOT/release/npm/assemble.mjs" "$ROOT/.npm-pkg"
+info "package ready in $ROOT/.npm-pkg"
+
+# --- 6. what would be published ----------------------------------------------
 
 step "Tarball contents"
-(cd "$ROOT/packages/npm-cli" && npm pack --dry-run) 2>&1 |
+(cd "$ROOT/.npm-pkg" && npm pack --dry-run) 2>&1 |
   sed -n '/Tarball Contents/,$p' |
   sed 's/^/  /'
 
 if [ "$DRY_RUN" = 1 ]; then
   step "Dry run: nothing was published"
-  info "publish with: sh scripts/npm-release.sh"
+  info "publish with: sh release/npm/publish.sh"
   exit 0
 fi
 
-# --- 6. publish -------------------------------------------------------------
+# --- 7. publish ---------------------------------------------------------------
 
 step "Publish"
 confirm "Publish $REPO's npm package otter-note@$VERSION to registry.npmjs.org?"
-(cd "$ROOT/packages/npm-cli" && npm publish)
+(cd "$ROOT/.npm-pkg" && npm publish)
 
 step "Published"
 info "verify with: npm view otter-note version"

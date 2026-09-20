@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { assetCandidates, defaultInstallDir, tauriTarget, unsupportedMessage } from '../lib/platform.js';
+import { assetCandidates, defaultInstallDir, tauriTarget, unsupportedMessage } from './lib/platform.js';
 
 describe('tauriTarget', () => {
   it('maps macOS architectures to the names used in release assets', () => {

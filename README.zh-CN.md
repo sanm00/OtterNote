@@ -37,7 +37,7 @@
 macOS 与 Linux，安装最新版本：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/release/install/install.sh | sh
 ```
 
 或使用 npm：
@@ -65,7 +65,7 @@ sh install.sh --yes                                # 不再交互确认
 用一条命令的形式时，参数写在 `sh -s --` 之后：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/scripts/install.sh |
+curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/release/install/install.sh |
   VERSION=0.1.0 sh -s -- --dry-run
 ```
 
@@ -75,7 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/scripts/insta
 想先读一遍脚本再运行：
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/sanm00/OtterNote/main/scripts/install.sh
+curl -fsSLO https://raw.githubusercontent.com/sanm00/OtterNote/main/release/install/install.sh
 less install.sh && sh install.sh
 ```
 

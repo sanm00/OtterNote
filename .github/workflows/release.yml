@@ -1,9 +1,9 @@
 name: Release
 
 # Build the macOS and Linux packages for a version tag and publish them with a
-# SHA256SUMS file. scripts/install.sh (and the npm CLI that wraps it) expects
-# exactly these asset names, so keep the tag, the app version and the files in
-# sync.
+# SHA256SUMS file. release/install/install.sh (and the npm CLI that wraps it)
+# expects exactly these asset names, so keep the tag, the app version and the
+# files in sync.
 on:
   push:
     tags:

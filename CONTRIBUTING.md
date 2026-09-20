@@ -68,7 +68,7 @@ npm run lint:fix
 
 ## Testing the installer
 
-`scripts/install.sh` is the one script that can delete things, so tests for it
+`release/install/install.sh` is the one script that can delete things, so tests for it
 must be defensive:
 
 - Always pass `--install-dir` (or set `INSTALL_DIR`) to a **temporary** directory. Never run the installer, and never run `install.sh --uninstall --yes`, without an explicit install directory: the default is `/Applications` on macOS and `~/.local/bin` on Linux, which is a real installation.
@@ -79,16 +79,16 @@ must be defensive:
 
 ## Releasing
 
-The app itself is published by pushing a `v<version>` tag, which runs `.github/workflows/release.yml`. Tag versions must match `src-tauri/tauri.conf.json`, which is the only place a version number is written; `scripts/check-npm-release.mjs` fails if anything else disagrees.
+The app itself is published by pushing a `v<version>` tag, which runs `.github/workflows/release.yml`. Tag versions must match `src-tauri/tauri.conf.json`, which is the only place a version number is written; `release/npm/verify.mjs` fails if anything else disagrees.
 
-The `otter-note` npm package is a thin installer that downloads a GitHub release, so it must be published **after** that release exists. Use `scripts/npm-release.sh` rather than `npm publish` directly:
+The `otter-note` npm package is a thin installer that downloads a GitHub release, so it must be published **after** that release exists. Use `release/npm/publish.sh` rather than `npm publish` directly:
 
 ```sh
-sh scripts/npm-release.sh --dry-run     # every check, nothing published
-sh scripts/npm-release.sh               # publish
+sh release/npm/publish.sh --dry-run     # every check, nothing published
+sh release/npm/publish.sh               # publish
 ```
 
-It runs the consistency check and the full quality gates, refuses to publish when the matching GitHub release is missing, and shows the tarball contents before asking for confirmation. It never creates tags and never rewrites versions. `npm publish` also runs the consistency check through `prepublishOnly`, and CI runs it on every pull request, so the two install channels cannot drift apart silently: the asset names and default install directories in `packages/npm-cli/lib/platform.js` have to keep matching `scripts/install.sh`.
+It runs the consistency check and the full quality gates, refuses to publish when the matching GitHub release is missing, and shows the tarball contents before asking for confirmation. It never creates tags and never rewrites versions. It also assembles the package: `release/npm/assemble.mjs` builds the generated npm package into `.npm-pkg/` right before packing, so the script is the only supported publish path. CI runs the same consistency check on every pull request, so the two install channels cannot drift apart silently: the asset names and default install directories in `release/npm/package/lib/platform.js` have to keep matching `release/install/install.sh`.
 
 ## Code style
 

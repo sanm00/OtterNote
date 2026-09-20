@@ -57,21 +57,22 @@ release does not require a new npm publish. When the CLI itself changes, publish
 it from the repository root with the release script:
 
 ```sh
-sh scripts/npm-release.sh --dry-run --skip-gates   # inspect the tarball only
-sh scripts/npm-release.sh                          # publish
+sh release/npm/publish.sh --dry-run --skip-gates   # inspect the tarball only
+sh release/npm/publish.sh                          # publish
 ```
 
 The script refuses to publish before the matching GitHub release exists, because
 `postinstall` is what downloads it. It also re-checks that this package agrees
 with `scripts/install.sh` on versions, asset names and default install
-directories; the same check runs from `prepublishOnly` and in CI, so a plain
-`npm publish` cannot ship a package that fails on some platform either.
+directories; the same consistency check runs in CI, and it assembles this
+package itself (via `release/npm/assemble.mjs`) before inspecting it, so
+a publish through the script cannot ship a package that fails on some platform.
 
 Version numbers are never rewritten by the script: `src-tauri/tauri.conf.json` is
 the source of truth. Bump `version` here in the same change when the CLI version
 should track the app version. The tarball is a few KB: `scripts/install.sh` and
-the LICENSE are bundled at pack time and the app itself is downloaded during
-installation.
+the LICENSE are bundled into the assembled package and the app itself is
+downloaded during installation.
 
 ## License
 

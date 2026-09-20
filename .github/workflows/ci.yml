@@ -41,7 +41,7 @@ jobs:
         run: npm run build
 
       - name: Check npm package consistency
-        run: node scripts/check-npm-release.mjs
+        run: node release/npm/verify.mjs
 
   rust:
     name: Rust (${{ matrix.os }})

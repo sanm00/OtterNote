@@ -14,6 +14,7 @@ export default tseslint.config(
       'src-tauri/gen/**',
       'src-tauri/icons/**',
       'public/**',
+      '.npm-pkg/**',
     ],
   },
   js.configs.recommended,
@@ -75,8 +76,9 @@ export default tseslint.config(
     },
   },
   {
-    // The npm CLI package is plain Node ESM.
-    files: ['packages/**/*.js'],
+    // The npm CLI sources are plain Node ESM (they are copied verbatim into the
+    // generated package), so they must run in Node, not the browser.
+    files: ['release/npm/package/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
@@ -84,8 +86,8 @@ export default tseslint.config(
     },
   },
   {
-    // Repository maintenance scripts are plain Node ESM too.
-    files: ['scripts/**/*.mjs'],
+    // Repository release tooling is plain Node ESM too.
+    files: ['release/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',

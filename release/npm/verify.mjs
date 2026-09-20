@@ -1,28 +1,46 @@
 // Consistency gate for the published npm package.
 //
-// `packages/npm-cli` duplicates a few facts that also live in the repository
-// root: the version, the GitHub repository slug, the release asset names and
-// the default install directories. Duplicated facts drift, so every one of them
-// is asserted here instead of being kept in sync by memory.
+// The npm package is generated from the repository by
+// release/npm/assemble.mjs, so its version, supported platforms and asset
+// names all come from the project itself. A few facts appear in more than one
+// place regardless -- the GitHub slug, the asset names and the default install
+// directories -- and every one of them is asserted here instead of being kept
+// in sync by memory.
 //
-// Run it directly (`node scripts/check-npm-release.mjs`), through CI, or let
-// `npm publish` run it through the package's `prepublishOnly` hook.
+// Run it directly (`node release/npm/verify.mjs`), through CI, or let
+// `release/npm/publish.sh` run it before it packs or publishes.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { assetCandidates, defaultInstallDir, tauriTarget } from '../packages/npm-cli/lib/platform.js';
+import { assetCandidates, defaultInstallDir, tauriTarget } from './package/lib/platform.js';
 
-const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-const packageRoot = path.join(repoRoot, 'packages/npm-cli');
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+const cliDir = path.join(repoRoot, 'release/npm/package');
+
+// The published package is generated (release/npm/assemble.mjs), not tracked
+// in the repository. Assemble it into a throwaway directory so the gate checks
+// the exact package contents that `npm pack` would produce.
+const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'otter-note-check-'));
+const assemble = spawnSync(process.execPath, [path.join(repoRoot, 'release/npm/assemble.mjs'), packageRoot], {
+  cwd: repoRoot,
+  encoding: 'utf8',
+});
+if (assemble.status !== 0) {
+  console.error(assemble.stdout || assemble.stderr || 'assemble.mjs failed');
+  process.exit(1);
+}
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const rootPackage = readJson(path.join(repoRoot, 'package.json'));
 const cliPackage = readJson(path.join(packageRoot, 'package.json'));
 const tauriConfig = readJson(path.join(repoRoot, 'src-tauri/tauri.conf.json'));
-const installer = fs.readFileSync(path.join(repoRoot, 'scripts/install.sh'), 'utf8');
-const platformSource = fs.readFileSync(path.join(packageRoot, 'lib/platform.js'), 'utf8');
+const installer = fs.readFileSync(path.join(repoRoot, 'release/install/install.sh'), 'utf8');
+const platformSource = fs.readFileSync(path.join(cliDir, 'lib/platform.js'), 'utf8');
+const npmReleaseScript = fs.readFileSync(path.join(repoRoot, 'release/npm/publish.sh'), 'utf8');
 
 // A version nobody would ever release, so the asset names can be compared
 // between the two channels without depending on the current release.
@@ -57,7 +75,7 @@ const targetArchitectures = [
 const versions = {
   'package.json': rootPackage.version,
   'src-tauri/tauri.conf.json': tauriConfig.version,
-  'packages/npm-cli/package.json': cliPackage.version,
+  'generated npm package.json': cliPackage.version,
 };
 const distinctVersions = [...new Set(Object.values(versions))];
 check(
@@ -77,7 +95,7 @@ check(
 // --- repository slug --------------------------------------------------------
 
 const slugs = {
-  'scripts/install.sh': installer.match(/^REPO="([^"]+)"/m)?.[1],
+  'release/install/install.sh': installer.match(/^REPO="([^"]+)"/m)?.[1],
   'lib/platform.js': slugFromUrl(platformSource.match(/https:\/\/github\.com\/[\w./-]+/)?.[0]),
   'package.json repository': slugFromUrl(cliPackage.repository?.url),
   'package.json homepage': slugFromUrl(cliPackage.homepage),
@@ -173,7 +191,7 @@ check(
 check(
   'the installer is shipped inside the package',
   (cliPackage.files ?? []).includes('scripts/install.sh'),
-  'add "scripts/install.sh" to files and let prepack copy it',
+  'add "scripts/install.sh" to files and let the assembler copy it',
 );
 
 const binRelative = Object.values(cliPackage.bin ?? {})[0];
@@ -193,16 +211,21 @@ check(
 );
 
 check(
-  'the release guard is wired to npm publish',
-  String(cliPackage.scripts?.prepublishOnly ?? '').includes('check-npm-release.mjs'),
-  `prepublishOnly: ${cliPackage.scripts?.prepublishOnly ?? 'missing'}`,
+  'publish.sh runs the consistency gate',
+  npmReleaseScript.includes('node release/npm/verify.mjs'),
+  'publish.sh is the only supported publish path and must run the gate first',
 );
 
 check(
-  'prepack and postinstall are wired',
-  String(cliPackage.scripts?.prepack ?? '').includes('sync-install-script') &&
-    String(cliPackage.scripts?.postinstall ?? '').includes('postinstall'),
-  `prepack: ${cliPackage.scripts?.prepack ?? 'missing'} / postinstall: ${cliPackage.scripts?.postinstall ?? 'missing'}`,
+  'publish.sh assembles the package before packing',
+  npmReleaseScript.includes('release/npm/assemble.mjs'),
+  'publish.sh must assemble the package before npm pack / npm publish',
+);
+
+check(
+  'the package postinstall is wired',
+  String(cliPackage.scripts?.postinstall ?? '').includes('postinstall'),
+  `postinstall: ${cliPackage.scripts?.postinstall ?? 'missing'}`,
 );
 
 // --- report -----------------------------------------------------------------

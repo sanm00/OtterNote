@@ -35,7 +35,7 @@ Prebuilt packages are published on the [Releases page](https://github.com/sanm00
 macOS and Linux, latest release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/release/install/install.sh | sh
 ```
 
 Or with npm:
@@ -69,7 +69,7 @@ sh install.sh --yes                                # no confirmation prompts
 In the one-command form, pass them after `sh -s --`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/scripts/install.sh |
+curl -fsSL https://raw.githubusercontent.com/sanm00/OtterNote/main/release/install/install.sh |
   VERSION=0.1.0 sh -s -- --dry-run
 ```
 
@@ -80,7 +80,7 @@ environment variables, with `OTTERNOTE_*` equivalents for the npm CLI.
 To read the script before running it:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/sanm00/OtterNote/main/scripts/install.sh
+curl -fsSLO https://raw.githubusercontent.com/sanm00/OtterNote/main/release/install/install.sh
 less install.sh && sh install.sh
 ```
 
