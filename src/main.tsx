@@ -1,7 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 import { EditorView } from '@codemirror/view';
 import { emit, listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog, ask as askDialog } from '@tauri-apps/plugin-dialog';
@@ -1002,9 +1003,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
       />
       <StatusToast message={status} />
       <div className={`min-h-0 flex-1 px-6 py-5 ${isEditing ? 'flex' : 'overflow-y-auto'}`}>
-        <div
-          className={`w-full ${isEditing ? 'editor-workspace flex min-h-0 flex-1' : 'mx-auto max-w-3xl space-y-3.5'}`}
-        >
+        <div className={`w-full ${isEditing ? 'editor-workspace flex min-h-0 flex-1' : 'space-y-3.5 px-3'}`}>
           {isEditing ? (
             <div className="editor-shell">
               <CodeMirror
@@ -3257,6 +3256,98 @@ function PageHeader({
   );
 }
 
+type MarkdownAstNode = {
+  type?: string;
+  value?: unknown;
+  properties?: { className?: unknown };
+  children?: MarkdownAstNode[];
+};
+
+const markdownRemarkPlugins: NonNullable<React.ComponentProps<typeof ReactMarkdown>['remarkPlugins']> = [
+  remarkGfm,
+];
+
+const markdownRehypePlugins: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [
+  [rehypeHighlight, { detect: false, ignoreMissing: true }],
+];
+
+function markdownCodeLanguage(node?: ExtraProps['node']) {
+  const codeChild = node?.children.find((child) => child.type === 'element' && child.tagName === 'code');
+  const className = codeChild?.type === 'element' ? codeChild.properties?.className : undefined;
+  const classes = Array.isArray(className)
+    ? className.filter((item): item is string => typeof item === 'string')
+    : typeof className === 'string'
+      ? className.split(/\s+/)
+      : [];
+  const language = classes.find((item) => item.startsWith('language-'));
+  return language ? language.slice('language-'.length) : '';
+}
+
+function markdownNodeText(node?: ExtraProps['node'] | MarkdownAstNode): string {
+  if (!node || typeof node !== 'object') {
+    return '';
+  }
+
+  const current = node as MarkdownAstNode;
+  if (current.type === 'text') {
+    return typeof current.value === 'string' ? current.value : '';
+  }
+
+  if (!Array.isArray(current.children)) {
+    return '';
+  }
+
+  return current.children.map((child) => markdownNodeText(child)).join('');
+}
+
+function MarkdownCodeBlock({ node, children, ...props }: React.ComponentProps<'pre'> & ExtraProps) {
+  const language = markdownCodeLanguage(node);
+  const [copied, setCopied] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!copied) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  const copyCode = React.useCallback(async () => {
+    const text = markdownNodeText(node);
+    if (!text) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch (currentError) {
+      window.alert(errorMessage(currentError));
+    }
+  }, [node]);
+
+  return (
+    <div className="markdown-code-block">
+      <div className="markdown-code-block-header">
+        <span className="markdown-code-block-language">{language || 'text'}</span>
+        <button
+          type="button"
+          className="markdown-code-block-copy"
+          onClick={copyCode}
+          aria-label={copied ? 'Code copied' : 'Copy code block'}
+        >
+          <Copy aria-hidden="true" className="h-3 w-3" />
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre {...props} tabIndex={0}>
+        {children}
+      </pre>
+    </div>
+  );
+}
+
 function MarkdownContent({
   content,
   enableTaskCheckboxes = false,
@@ -3267,17 +3358,23 @@ function MarkdownContent({
   const components = enableTaskCheckboxes
     ? {
         img: MarkdownImageElement,
+        pre: MarkdownCodeBlock,
         input: ({
           node: _node,
           disabled: _disabled,
           ...props
         }: React.ComponentProps<'input'> & { node?: unknown }) => <input {...props} disabled={false} />,
       }
-    : { img: MarkdownImageElement };
+    : { img: MarkdownImageElement, pre: MarkdownCodeBlock };
 
   return (
     <div className="markdown-content">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform} components={components}>
+      <ReactMarkdown
+        remarkPlugins={markdownRemarkPlugins}
+        rehypePlugins={markdownRehypePlugins}
+        urlTransform={markdownUrlTransform}
+        components={components}
+      >
         {content}
       </ReactMarkdown>
     </div>
