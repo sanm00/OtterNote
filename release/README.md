@@ -32,6 +32,9 @@
 
 ## 发布流程（详见 state/STATUS.md）
 
+发起一次发布 = 推一个 `v<version>` tag。流水线 `.github/workflows/release.yml` 接手全部：
+桌面 bundle → GitHub release → npm 发布，无需任何密钥（OIDC）。
+
 ```
 打 tag v<version> ─→ .github/workflows/release.yml
                           ├─ build：桌面 bundle（macOS×2 + Linux）
@@ -42,6 +45,69 @@
                                 │
       （内侧：npm/assemble + npm/verify）
 ```
+
+### 发布一个新版本（完整步骤）
+
+0. **只用做一次**：npm 上确认 `otter-note` 包名归你，并在
+   <https://www.npmjs.com/package/otter-note/settings> → **Trusted publishing** 配好
+   GitHub Actions：org `sanm00`、repo `OtterNote`、workflow `release.yml`、勾选允许
+   `npm publish` 直接发布。配好后流水线 npm 步骤走 OIDC，永远不需要 npm token。
+
+1. **改版本号**。唯一真源是 `src-tauri/tauri.conf.json` 的 `version`，同时把根
+   `package.json`、`src-tauri/Cargo.toml` 与两个 lock 文件（`package-lock.json`、
+   `Cargo.lock`）里的版本改成一模一样的值，否则 CI 的闸门会拦。
+
+   ```sh
+   node -p "require('./src-tauri/tauri.conf.json').version"   # 确认
+   ```
+
+2. **本机预检**（可选但推荐）：跑一致性闸门，确认 23 项全过。
+
+   ```sh
+   node release/npm/verify.mjs
+   ```
+
+3. **提交并推 main**。CI 会在 `main` 上再跑一遍完整闸门，绿了才继续。
+
+   ```sh
+   git add -A && git commit -m "Bump version to vX.Y.Z"
+   git push origin main
+   ```
+
+4. **打 tag 并推送**——这一步触发发布流水线。
+
+   ```sh
+   git tag vX.Y.Z        # 必须与 tauri.conf.json 的 version 完全一致（不带 v）
+   git push origin vX.Y.Z
+   ```
+
+5. **等流水线**（约 10 分钟，构建 3 个平台）。自动完成：桌面 bundle → GitHub
+   release（dmg ×2 + AppImage + deb + SHA256SUMS）→ npm 发布 `otter-note@X.Y.Z`。
+
+6. **验证发布结果**：
+
+   ```sh
+   npm view otter-note version           # 应为 X.Y.Z
+   npm view otter-note time."X.Y.Z"      # 发布时间
+   curl -fsSL https://github.com/sanm00/OtterNote/releases/tag/vX.Y.Z  # 桌面资产
+   ```
+
+   发布后无人维护时，可在 CI 里手动重跑失败 job；tag 指向错误提交也可
+   `git tag -f vX.Y.Z <sha> && git push origin vX.Y.Z --force` 重新触发。
+
+7. **更新账本**：把本版记进 `release/state/STATUS.md`「当前状态」与「已发布记录」。
+
+### 手动备用路径（不对正常发布流程产生依赖）
+
+流水线 npm 步骤出错时才需要，平时不要用：
+
+```sh
+sh release/npm/publish.sh --dry-run     # 每个检查都跑，什么都不发布
+sh release/npm/publish.sh               # 正式发布（要求对应 GitHub release 已存在）
+```
+
+注意：本地发布必须**先有** GitHub release，否则 `postinstall` 会下载到 404；本机若
+未登录 npm 会走交互式登录，账号开了 2FA 时需在浏览器完成认证。
 
 两个自动化闸门保证「桌面渠道」与「npm 渠道」不会悄悄漂移：
 
