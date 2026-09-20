@@ -1,6 +1,10 @@
 # OtterNote
 
 [![CI](https://github.com/sanm00/OtterNote/actions/workflows/ci.yml/badge.svg)](https://github.com/sanm00/OtterNote/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/otter-note.svg)](https://www.npmjs.com/package/otter-note)
+[![Downloads](https://img.shields.io/npm/dm/otter-note.svg)](https://www.npmjs.com/package/otter-note)
+[![Release](https://img.shields.io/github/v/release/sanm00/OtterNote.svg)](https://github.com/sanm00/OtterNote/releases)
+[![License: MIT](https://img.shields.io/github/license/sanm00/OtterNote.svg)](LICENSE)
 
 [English](README.md) | **简体中文**
 
