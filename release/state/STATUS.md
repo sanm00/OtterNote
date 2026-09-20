@@ -6,10 +6,10 @@
 ## 当前状态
 
 | curl 安装通道 | 可用（`release/install/install.sh`） |
-| npm `otter-note` | **已发布 0.1.0**（latest，由本机 publish.sh 首发） |
-| GitHub release | **已发布 v0.1.0**（dmg ×2 + AppImage + deb + SHA256SUMS） |
-| 版本 tag | **v0.1.0 已打** |
-| 当前版本 | 0.1.0（`src-tauri/tauri.conf.json`） |
+| npm `otter-note` | **已发布 0.1.1**（latest） |
+| GitHub release | **已发布 v0.1.1**（dmg ×2 + AppImage + deb + SHA256SUMS） |
+| 版本 tag | **v0.1.1 已打** |
+| 当前版本 | 0.1.1（`src-tauri/tauri.conf.json`） |
 
 ## 渠道拓扑
 
@@ -42,6 +42,7 @@ src-tauri/tauri.conf.json            ← 唯一版本真源
 
 ## 已发布记录
 
-| 版本  | GitHub release                                 | npm otter-note  | 日期       | 备注                                                                                        |
-| ----- | ---------------------------------------------- | --------------- | ---------- | ------------------------------------------------------------------------------------------- |
-| 0.1.0 | v0.1.0（dmg ×2 + AppImage + deb + SHA256SUMS） | 0.1.0（latest） | 2026-09-20 | 首发：GitHub Actions 建 release；npm 由本机 publish.sh 发布；此后流水线 publish-npm 走 OIDC |
+| 版本  | GitHub release                                 | npm otter-note  | 日期       | 备注                                                            |
+| ----- | ---------------------------------------------- | --------------- | ---------- | --------------------------------------------------------------- |
+| 0.1.0 | v0.1.0（dmg ×2 + AppImage + deb + SHA256SUMS） | 0.1.0（latest） | 2026-09-20 | 首发：GitHub Actions 建 release；npm 由本机 publish.sh 发布     |
+| 0.1.1 | v0.1.1（dmg ×2 + AppImage + deb + SHA256SUMS） | 0.1.1（latest） | 2026-09-20 | OIDC 验证：publish-npm 用 trusted publisher 直发 npm，无 Secret |
