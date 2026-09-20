@@ -52,6 +52,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Guarantee the target is available. `dtolnay/rust-toolchain` should add it,
+      # but the Intel-macOS job (x86_64-apple-darwin on the ARM64 macos-latest
+      # runner) failed with "target is not installed" — make it explicit.
+      - name: Ensure the Rust target is installed
+        run: rustup target add ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
