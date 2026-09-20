@@ -33,18 +33,21 @@
 ## 发布流程（详见 state/STATUS.md）
 
 ```
-打 tag v<version> ─→ .github/workflows/release.yml ─→ GitHub release（桌面 bundle）
-                          │
-                          ▼
-               release/npm/publish.sh ─→ npm 发布 otter-note
-                          │
-              （内侧：npm/assemble + npm/verify）
+打 tag v<version> ─→ .github/workflows/release.yml
+                          ├─ build：桌面 bundle（macOS×2 + Linux）
+                          ├─ release：GitHub release（桌面 bundle + SHA256SUMS）
+                          └─ publish-npm：release/npm/publish.sh --yes --skip-gates ─→ npm 发布 otter-note
+                                （需 Secret NPM_TOKEN，未配置则中止）
+  手动备用（流水线 npm 步骤出错时）：sh release/npm/publish.sh
+                                │
+      （内侧：npm/assemble + npm/verify）
 ```
 
 两个自动化闸门保证「桌面渠道」与「npm 渠道」不会悄悄漂移：
 
 - **CI**：每个 PR 在 `Build frontend` 后跑 `node release/npm/verify.mjs`。
-- **发布前**：`release/npm/publish.sh` 自身先跑同一条闸门，再跑全量质量门。
+- **发布前**：`release/npm/publish.sh` 自身先跑同一条闸门，再跑全量质量门
+  （流水线里用 `--skip-gates` 复用推 main 时已过的质量门）。
 
 ## 本机常用命令
 

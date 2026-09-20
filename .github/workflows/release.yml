@@ -110,3 +110,38 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             dist/*
+
+  publish-npm:
+    name: Publish npm
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Reuses release/npm/publish.sh, the single supported npm publish path.
+      # The script assembles the package, re-runs the consistency gate, confirms
+      # v$VERSION exists on GitHub, shows the tarball and then publishes.
+      # --skip-gates skips the quality gates because this exact commit already
+      # passed them on main; --yes removes the interactive confirmations.
+      - name: Publish otter-note to npm
+        if: env.NPM_TOKEN != ''
+        run: sh release/npm/publish.sh --yes --skip-gates
+
+      # npm needs a token that owns the "otter-note" name. Until NPM_TOKEN is
+      # configured the desktop release still ships; only the npm hop is skipped.
+      - name: Warn about a missing NPM_TOKEN
+        if: env.NPM_TOKEN == ''
+        run: |
+          echo "::error::NPM_TOKEN secret is not set; the npm package was not published."
+          echo "Create an npm automation token and store it in Settings > Secrets > Actions."
+          exit 1
