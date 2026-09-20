@@ -81,7 +81,7 @@ must be defensive:
 
 The app itself is published by pushing a `v<version>` tag, which runs `.github/workflows/release.yml`. Tag versions must match `src-tauri/tauri.conf.json`, which is the only place a version number is written; `release/npm/verify.mjs` fails if anything else disagrees.
 
-The `otter-note` npm package is a thin installer that downloads a GitHub release, so it must be published **after** that release exists. A fresh tag publishes npm automatically: the `publish-npm` job runs `release/npm/publish.sh` right after the GitHub release is created. It needs an npm **automation token** owned by the `otter-note` package name, stored as the repository secret `NPM_TOKEN`; without it that step fails so the missing credential is never silent.
+The `otter-note` npm package is a thin installer that downloads a GitHub release, so it must be published **after** that release exists. A fresh tag publishes npm automatically: the `publish-npm` job runs `release/npm/publish.sh` right after the GitHub release is created. It publishes with **trusted publishing (npm OIDC)** — no long-lived token is stored in this repository. npm validates the identity against the trusted publisher configured on the package's Settings page (Trusted publishing) with workflow filename `release.yml` and direct `npm publish` allowed.
 
 For local or emergency publishing, use `release/npm/publish.sh` rather than `npm publish` directly:
 

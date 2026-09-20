@@ -130,8 +130,13 @@ jobs:
     name: Publish npm
     needs: release
     runs-on: ubuntu-latest
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    # Trusted publishing (npm OIDC): GitHub hands npm a short-lived identity
+    # token, no long-lived NPM_TOKEN secret lives in this repository. npm
+    # validates it against the trusted publisher configured on the package's
+    # Settings page ("Trusted publishing") for this workflow file.
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -148,15 +153,7 @@ jobs:
       # v$VERSION exists on GitHub, shows the tarball and then publishes.
       # --skip-gates skips the quality gates because this exact commit already
       # passed them on main; --yes removes the interactive confirmations.
+      # The npm CLI detects the OIDC environment automatically and publishes
+      # with the trusted publisher identity instead of an npm token.
       - name: Publish otter-note to npm
-        if: env.NPM_TOKEN != ''
         run: sh release/npm/publish.sh --yes --skip-gates
-
-      # npm needs a token that owns the "otter-note" name. Until NPM_TOKEN is
-      # configured the desktop release still ships; only the npm hop is skipped.
-      - name: Warn about a missing NPM_TOKEN
-        if: env.NPM_TOKEN == ''
-        run: |
-          echo "::error::NPM_TOKEN secret is not set; the npm package was not published."
-          echo "Create an npm automation token and store it in Settings > Secrets > Actions."
-          exit 1

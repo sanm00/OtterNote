@@ -37,7 +37,7 @@
                           ├─ build：桌面 bundle（macOS×2 + Linux）
                           ├─ release：GitHub release（桌面 bundle + SHA256SUMS）
                           └─ publish-npm：release/npm/publish.sh --yes --skip-gates ─→ npm 发布 otter-note
-                                （需 Secret NPM_TOKEN，未配置则中止）
+                                （Trusted publishing / OIDC：npm 侧校验 workflow 身份，无 Secret）
   手动备用（流水线 npm 步骤出错时）：sh release/npm/publish.sh
                                 │
       （内侧：npm/assemble + npm/verify）
