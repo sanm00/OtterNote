@@ -15,11 +15,11 @@
         "title": "OtterNote",
         "hiddenTitle": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 12, "y": 12 },
+        "trafficLightPosition": { "x": 14, "y": 16 },
         "width": 1200,
         "height": 800,
-        "minWidth": 1024,
-        "minHeight": 680
+        "minWidth": 800,
+        "minHeight": 600
       }
     ],
     "security": {

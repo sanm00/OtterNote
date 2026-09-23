@@ -8,19 +8,10 @@ export function titleFromFirstLine(content: string) {
   return title.slice(0, 80);
 }
 
-export function buildNoteMarkdown(title: string, entryContents: string[]) {
-  const lines = [`# ${displayTitle(title)}`];
-  if (entryContents.length > 0) {
-    lines.push('');
-    entryContents.forEach((content, index) => {
-      lines.push(content.replace(/\s+$/, ''));
-      if (index < entryContents.length - 1) {
-        lines.push('', '---', '');
-      }
-    });
-  }
-
-  return lines.join('\n').trimEnd() + '\n';
+export function buildNoteMarkdown(title: string, content: string) {
+  const body = content.replace(/\s+$/, '');
+  const heading = `# ${displayTitle(title)}`;
+  return body ? `${heading}\n\n${body}\n` : `${heading}\n`;
 }
 
 export function buildExportFileName(title: string) {

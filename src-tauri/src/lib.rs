@@ -14,7 +14,7 @@ use std::{
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const STATE_FILE_NAME: &str = "state.json";
 const DELETED_STACK_FILE_NAME: &str = "deleted-stack.json";
@@ -47,6 +47,7 @@ struct StorageInfo {
     path: String,
     default_path: String,
     custom_path: Option<String>,
+    other_windows: usize,
 }
 
 #[derive(Serialize)]
@@ -397,6 +398,7 @@ fn set_storage_path(app: AppHandle, storage_path: String) -> Result<StorageInfo,
     )?;
 
     let new_storage_root = active_storage_root(&app)?;
+    ensure_storage_layout(&new_storage_root)?;
     let new_state_path = state_file_path_from_root(&new_storage_root);
     let new_attachment_dir = images_dir_for_storage_root(&new_storage_root);
     let new_notes_dir = notes_dir_for_storage_root(&new_storage_root);
@@ -439,7 +441,16 @@ fn set_storage_path(app: AppHandle, storage_path: String) -> Result<StorageInfo,
         fs::copy(&old_deleted_stack, &new_deleted_stack).map_err(|error| error.to_string())?;
     }
 
-    storage_info(&app)
+    let info = storage_info(&app)?;
+    if new_storage_root != old_storage_root {
+        // Sibling windows hold the previous data set in memory; tell them to
+        // rehydrate from the new root before they flush a stale snapshot.
+        let _ = app.emit(
+            STORAGE_CHANGED_EVENT,
+            serde_json::json!({ "path": info.path }),
+        );
+    }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -627,6 +638,7 @@ fn storage_info(app: &AppHandle) -> Result<StorageInfo, String> {
         custom_path: config
             .storage_path
             .map(|value| path_to_string(&resolve_storage_root(&value))),
+        other_windows: app.webview_windows().len().saturating_sub(1),
     })
 }
 
@@ -750,6 +762,9 @@ fn development_data_root(crate_dir: &Path) -> Option<PathBuf> {
 /// inherit the shell environment.
 const DATA_DIR_ENV: &str = "OTTERNOTE_DATA_DIR";
 
+/// Broadcast to every window after the active storage root moved.
+const STORAGE_CHANGED_EVENT: &str = "otter:storage-changed";
+
 fn data_dir_override() -> Option<PathBuf> {
     parse_data_dir_override(std::env::var_os(DATA_DIR_ENV).as_deref())
 }
@@ -776,9 +791,10 @@ fn root_is_release_default(root: &Path, home: Option<&Path>) -> bool {
 
 /// Keeps a debug build away from the directory that holds the user's real notes.
 ///
-/// The bootstrap config lives in `app_config_dir()`, which is shared by debug and
-/// release builds, so a `storage_path` chosen in the installed app would otherwise
-/// silently redirect development runs into the live data. An explicit
+/// Debug builds keep their bootstrap config under `com.otternote.desktop.dev`,
+/// so the folder chosen in the installed app is not even visible to them. This
+/// guard covers the remaining path: a release-style default root (`~/OtterNote`)
+/// reached through the debug default or a hand-edited config. An explicit
 /// `OTTERNOTE_DATA_DIR` is not checked here because setting it is deliberate.
 fn guard_storage_root(root: &Path, home: Option<&Path>, debug_build: bool) -> Result<(), String> {
     if debug_build && root_is_release_default(root, home) {
@@ -877,11 +893,32 @@ fn storage_config_path(app: &AppHandle) -> Result<PathBuf, String> {
         return Ok(root.join("storage.json"));
     }
 
-    Ok(app
-        .path()
+    Ok(debug_bootstrapped(bootstrap_config_dir(app)?).join("storage.json"))
+}
+
+/// The platform config directory keyed by the bundle identifier.
+fn bootstrap_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
         .app_config_dir()
-        .map_err(|error| error.to_string())?
-        .join("storage.json"))
+        .map_err(|error| error.to_string())
+}
+
+/// Debug builds live under their own identifier so that switching the storage
+/// folder in the installed app can never redirect development runs (and vice
+/// versa). `tauri.conf.json` cannot express this per-profile, so the last path
+/// segment is swapped here.
+fn debug_bootstrapped(config_dir: PathBuf) -> PathBuf {
+    #[cfg(debug_assertions)]
+    {
+        return config_dir.with_file_name(format!(
+            "{}.dev",
+            config_dir
+                .file_name()
+                .map_or(String::new(), |name| name.to_string_lossy().into_owned())
+        ));
+    }
+    #[cfg(not(debug_assertions))]
+    config_dir
 }
 
 /// `atomic_write_bytes` does not create missing directories, and a scratch
@@ -1208,6 +1245,19 @@ fn write_app_state_transaction(
         content: serialize_pretty(&root_state)?,
     }];
 
+    // A secondary window can flush a stale snapshot that still contains a note
+    // which another window has since deleted. The deletion record is
+    // authoritative: never rewrite a pending-deleted note's bundle file, and
+    // treat it as inactive so its on-disk file is removed below.
+    let explicitly_deleted_files = deleted_stack
+        .iter()
+        .filter(|snapshot| snapshot.snapshot_type == "note")
+        .filter_map(|snapshot| snapshot.note.as_ref())
+        .filter_map(|note| note.get("id").and_then(Value::as_str))
+        .map(|note_id| format!("{note_id}.json"))
+        .collect::<HashSet<_>>();
+
+    let mut surviving_bundles = Vec::new();
     for bundle in note_bundles {
         let note_id = bundle
             .note
@@ -1219,6 +1269,9 @@ fn write_app_state_transaction(
         }
 
         let file_name = format!("{note_id}.json");
+        if explicitly_deleted_files.contains(&file_name) {
+            continue;
+        }
         active_note_files.insert(file_name.clone());
         let versioned_bundle = NoteBundle {
             schema_version: CURRENT_DATA_VERSION,
@@ -1230,13 +1283,14 @@ fn write_app_state_transaction(
             target: notes_dir.join(file_name),
             content: serialize_pretty(&versioned_bundle)?,
         });
+        surviving_bundles.push(versioned_bundle);
     }
 
     files.push(PendingFileWrite {
         target: search_index_path(storage_root),
         content: serialize_pretty(&VersionedSearchIndex {
             data_version: CURRENT_DATA_VERSION,
-            records: build_search_index(note_bundles),
+            records: build_search_index(&surviving_bundles),
         })?,
     });
     files.push(PendingFileWrite {
@@ -1270,13 +1324,6 @@ fn write_app_state_transaction(
     }
 
     if !deletions.is_empty() {
-        let explicitly_deleted_files = deleted_stack
-            .iter()
-            .filter(|snapshot| snapshot.snapshot_type == "note")
-            .filter_map(|snapshot| snapshot.note.as_ref())
-            .filter_map(|note| note.get("id").and_then(Value::as_str))
-            .map(|note_id| format!("{note_id}.json"))
-            .collect::<HashSet<_>>();
         let unexpected_deletions = deletions
             .iter()
             .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
@@ -1530,8 +1577,8 @@ fn build_search_index(note_bundles: &[NoteBundle]) -> Vec<SearchIndexRecord> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let search_text = build_note_search_text(&title, &bundle.entries, &bundle.todos);
-            let preview = build_note_preview(&bundle.entries, &bundle.todos);
+            let search_text = build_note_search_text(&bundle.note, &title, &bundle.todos);
+            let preview = build_note_preview(&bundle.note, &bundle.todos);
 
             Some(SearchIndexRecord {
                 note_id,
@@ -1595,7 +1642,15 @@ fn read_full_app_state(app: &AppHandle, state_path: &Path) -> Result<String, Str
         }
     }
 
-    let note_bundles = read_note_bundles(&notes_dir)?;
+    let deleted_note_files: HashSet<String> = effective_deleted_stack
+        .iter()
+        .filter(|snapshot| snapshot.snapshot_type == "note")
+        .filter_map(|snapshot| snapshot.note.as_ref())
+        .filter_map(|note| note.get("id").and_then(Value::as_str))
+        .map(|note_id| format!("{note_id}.json"))
+        .collect();
+
+    let note_bundles = read_note_bundles(&notes_dir, &deleted_note_files)?;
     validate_or_rebuild_search_index(&storage_root, &note_bundles)?;
 
     if note_bundles.is_empty() && effective_deleted_stack.is_empty() {
@@ -1606,7 +1661,10 @@ fn read_full_app_state(app: &AppHandle, state_path: &Path) -> Result<String, Str
     serde_json::to_string(&merged).map_err(|error| error.to_string())
 }
 
-fn read_note_bundles(notes_dir: &Path) -> Result<Vec<NoteBundle>, String> {
+fn read_note_bundles(
+    notes_dir: &Path,
+    deleted_note_files: &HashSet<String>,
+) -> Result<Vec<NoteBundle>, String> {
     if !notes_dir.exists() {
         return Ok(Vec::new());
     }
@@ -1623,6 +1681,20 @@ fn read_note_bundles(notes_dir: &Path) -> Result<Vec<NoteBundle>, String> {
         }
 
         let file_name = entry.file_name().to_string_lossy().into_owned();
+        let primary_name = file_name
+            .strip_suffix(".json.bak")
+            .map(|name| format!("{name}.json"))
+            .unwrap_or_else(|| file_name.clone());
+
+        // A pending-deleted note must never be resurrected: skip both its
+        // primary file and its backup, and purge any leftover copies.
+        if deleted_note_files.contains(&primary_name) {
+            if file_name.ends_with(".json") || file_name.ends_with(".json.bak") {
+                let _ = fs::remove_file(entry.path());
+            }
+            continue;
+        }
+
         let path = if file_name.ends_with(".json") {
             entry.path()
         } else if let Some(primary_name) = file_name.strip_suffix(".json.bak") {
@@ -1704,12 +1776,16 @@ fn split_inner_state(value: Value) -> (Value, Vec<NoteBundle>, Vec<DeletedSnapsh
     }
 
     let mut todos_by_note: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut standalone_todos: Vec<Value> = Vec::new();
     for todo in todos {
-        if let Some(note_id) = todo.get("noteId").and_then(Value::as_str) {
-            todos_by_note
+        match todo.get("noteId").and_then(Value::as_str) {
+            Some(note_id) => todos_by_note
                 .entry(note_id.to_string())
                 .or_default()
-                .push(todo);
+                .push(todo),
+            // A todo without a note is owned by no bundle, so it stays in the
+            // root state instead of being dropped with the notes array.
+            None => standalone_todos.push(todo),
         }
     }
 
@@ -1730,9 +1806,15 @@ fn split_inner_state(value: Value) -> (Value, Vec<NoteBundle>, Vec<DeletedSnapsh
     let mut root_map = map.clone();
     root_map.remove("notes");
     root_map.remove("entries");
-    root_map.remove("todos");
     root_map.remove("deletedStack");
     root_map.remove("activities");
+    // Standalone todos have no bundle to live in; keep them on the root so a
+    // restart can restore them.
+    if standalone_todos.is_empty() {
+        root_map.remove("todos");
+    } else {
+        root_map.insert("todos".to_string(), Value::Array(standalone_todos));
+    }
 
     (Value::Object(root_map), note_bundles, deleted_stack)
 }
@@ -1768,6 +1850,12 @@ fn merge_inner_state(
     let mut entries = Vec::new();
     let mut todos = Vec::new();
 
+    // Todos that belong to no bundle live on the root state; carry them over
+    // before folding in the per-note todos.
+    if let Some(existing) = root_map.get("todos").and_then(Value::as_array) {
+        todos.extend(existing.iter().cloned());
+    }
+
     for bundle in note_bundles {
         notes.push(bundle.note);
         entries.extend(bundle.entries);
@@ -1788,13 +1876,14 @@ fn merge_inner_state(
     inner_state
 }
 
-fn build_note_search_text(title: &str, entries: &[Value], todos: &[Value]) -> String {
-    let mut parts = Vec::new();
-    parts.push(title.to_string());
-    for entry in entries {
-        if let Some(content) = entry.get("content").and_then(Value::as_str) {
-            parts.push(content.to_string());
-        }
+fn note_content(note: &Value) -> Option<&str> {
+    note.get("content").and_then(Value::as_str)
+}
+
+fn build_note_search_text(note: &Value, title: &str, todos: &[Value]) -> String {
+    let mut parts = vec![title.to_string()];
+    if let Some(content) = note_content(note) {
+        parts.push(content.to_string());
     }
     for todo in todos {
         if let Some(text) = todo.get("title").and_then(Value::as_str) {
@@ -1804,12 +1893,12 @@ fn build_note_search_text(title: &str, entries: &[Value], todos: &[Value]) -> St
     parts.join("\n")
 }
 
-fn build_note_preview(entries: &[Value], todos: &[Value]) -> String {
-    if let Some(entry) = entries
-        .first()
-        .and_then(|value| value.get("content").and_then(Value::as_str))
-    {
-        return preview_text(entry, 140);
+fn build_note_preview(note: &Value, todos: &[Value]) -> String {
+    if let Some(content) = note_content(note) {
+        let preview = preview_text(content, 140);
+        if !preview.is_empty() {
+            return preview;
+        }
     }
 
     if let Some(todo) = todos
@@ -2362,6 +2451,118 @@ mod tests {
     }
 
     #[test]
+    fn standalone_todos_survive_a_split_and_merge_round_trip() {
+        let state = json!({
+            "state": {
+                "notes": [{
+                    "id": "note-1",
+                    "title": "Note",
+                    "createdAt": "2026-01-01T00:00:00.000Z",
+                    "updatedAt": "2026-01-01T00:00:00.000Z"
+                }],
+                "todos": [
+                    {
+                        "id": "todo-note",
+                        "noteId": "note-1",
+                        "title": "belongs to a note",
+                        "status": "todo",
+                        "source": "note",
+                        "createdAt": "2026-01-01T00:00:00.000Z",
+                        "updatedAt": "2026-01-01T00:00:00.000Z"
+                    },
+                    {
+                        "id": "todo-standalone",
+                        "title": "no note at all",
+                        "status": "todo",
+                        "source": "standalone",
+                        "createdAt": "2026-01-02T00:00:00.000Z",
+                        "updatedAt": "2026-01-02T00:00:00.000Z"
+                    }
+                ]
+            },
+            "version": 0
+        });
+
+        let (root_state, note_bundles, deleted_stack) = split_app_state(&state);
+
+        // The note-bound todo rides in the bundle; the standalone one stays on
+        // the root state so it is not lost when only the bundle files persist.
+        assert_eq!(note_bundles.len(), 1);
+        assert_eq!(note_bundles[0].todos.len(), 1);
+        assert_eq!(
+            note_bundles[0].todos[0].get("id").and_then(Value::as_str),
+            Some("todo-note")
+        );
+        let kept = root_state["state"]["todos"].as_array().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            kept[0].get("id").and_then(Value::as_str),
+            Some("todo-standalone")
+        );
+
+        let merged = merge_root_state_with_notes(root_state, note_bundles, deleted_stack);
+        let mut ids = merged["state"]["todos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|todo| todo.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        ids.sort();
+        assert_eq!(ids, vec!["todo-note", "todo-standalone"]);
+    }
+
+    #[test]
+    fn standalone_todos_survive_a_full_disk_round_trip() {
+        let storage = TestStorage::new("standalone-round-trip");
+        let state_path = state_file_path_from_root(&storage.root);
+        let state = json!({
+            "dataVersion": CURRENT_DATA_VERSION,
+            "state": {
+                "todos": [{
+                    "id": "todo-standalone",
+                    "title": "no note at all",
+                    "status": "todo",
+                    "source": "standalone",
+                    "createdAt": "2026-01-02T00:00:00.000Z",
+                    "updatedAt": "2026-01-02T00:00:00.000Z"
+                }]
+            },
+            "version": 0
+        });
+
+        let (root_state, note_bundles, deleted_stack) = split_app_state(&state);
+        write_app_state_transaction(
+            &storage.root,
+            &state_path,
+            root_state,
+            &note_bundles,
+            &deleted_stack,
+            None,
+        )
+        .unwrap();
+
+        // Simulate a cold start: read only what is on disk.
+        let persisted = read_json_file_with_recovery::<Value>(&state_path)
+            .unwrap()
+            .unwrap();
+        let (root_state, _, deleted_stack) = split_app_state(&persisted);
+        let note_bundles = read_note_bundles(
+            &notes_dir_for_storage_root(&storage.root),
+            &HashSet::new(),
+        )
+        .unwrap();
+        let merged = merge_root_state_with_notes(root_state, note_bundles, deleted_stack);
+
+        let ids = merged["state"]["todos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|todo| todo.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["todo-standalone"]);
+    }
+
+    #[test]
     fn interrupted_temp_write_keeps_primary_json_readable() {
         let storage = TestStorage::new("interrupted-temp");
         let path = storage.root.join("sample.json");
@@ -2531,11 +2732,39 @@ mod tests {
         let content = serialize_pretty(&note_bundle("note-1", "Recovered note")).unwrap();
         atomic_write_bytes(&backup_file_path(&path), &content, false).unwrap();
 
-        let bundles = read_note_bundles(&notes_dir_for_storage_root(&storage.root)).unwrap();
+        let bundles =
+            read_note_bundles(&notes_dir_for_storage_root(&storage.root), &HashSet::new()).unwrap();
 
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].note["title"], "Recovered note");
         assert!(path.exists());
+    }
+
+    #[test]
+    fn deleted_notes_are_never_resurrected_from_backups_at_startup() {
+        let storage = TestStorage::new("no-bak-resurrection");
+        let notes_dir = notes_dir_for_storage_root(&storage.root);
+        let doomed = note_bundle_path(&storage.root, "doomed");
+        let survivor = note_bundle_path(&storage.root, "survivor");
+        write_json_file(&doomed, &note_bundle("doomed", "Doomed note")).unwrap();
+        write_json_file(&survivor, &note_bundle("survivor", "Survivor")).unwrap();
+
+        // Simulate the state left behind by a delete committed through the
+        // transaction path: primary removed, backup retained.
+        let _ = fs::copy(&doomed, backup_file_path(&doomed));
+        fs::remove_file(&doomed).unwrap();
+
+        let deleted: HashSet<String> = ["doomed.json".to_string()].into_iter().collect();
+        let bundles = read_note_bundles(&notes_dir, &deleted).unwrap();
+
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].note["id"], "survivor");
+        assert!(!doomed.exists(), "deleted primary must stay removed");
+        assert!(
+            !backup_file_path(&doomed).exists(),
+            "deleted backup must be purged so it cannot resurrect"
+        );
+        assert!(survivor.exists());
     }
 
     #[test]
@@ -2585,6 +2814,66 @@ mod tests {
         )
         .unwrap();
         assert!(!note_bundle_path(&storage.root, "note-1").exists());
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_resurrect_a_pending_deleted_note() {
+        let storage = TestStorage::new("reject-stale-resurrection");
+        let state_path = state_file_path_from_root(&storage.root);
+        write_app_state_transaction(
+            &storage.root,
+            &state_path,
+            root_state("with-notes"),
+            &[
+                note_bundle("note-1", "Doomed note"),
+                note_bundle("note-2", "Survivor"),
+            ],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        // A secondary window that has not yet synced the deletion flushes a
+        // snapshot still containing note-1, alongside the deletion record.
+        let deletion = DeletedSnapshot {
+            snapshot_type: "note".to_string(),
+            note: Some(json!({ "id": "note-1", "title": "Doomed note" })),
+            entry: None,
+            todo: None,
+            entries: Vec::new(),
+            todos: Vec::new(),
+            recent_note_ids: Vec::new(),
+        };
+        write_app_state_transaction(
+            &storage.root,
+            &state_path,
+            root_state("stale-with-deleted"),
+            &[
+                note_bundle("note-1", "Doomed note"),
+                note_bundle("note-2", "Survivor"),
+            ],
+            &[deletion],
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !note_bundle_path(&storage.root, "note-1").exists(),
+            "pending-deleted note must stay removed even when present in the snapshot"
+        );
+        assert!(note_bundle_path(&storage.root, "note-2").exists());
+
+        let index: VersionedSearchIndex =
+            read_json_file_with_recovery(&search_index_path(&storage.root))
+                .unwrap()
+                .expect("search index should exist");
+        let indexed_ids = index
+            .records
+            .iter()
+            .map(|record| record.note_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(!indexed_ids.contains(&"note-1"));
+        assert!(indexed_ids.contains(&"note-2"));
     }
 
     #[test]
@@ -3034,6 +3323,21 @@ mod tests {
 
         // A release build is supposed to use exactly that directory.
         assert!(choose_storage_root(Some("~/OtterNote"), default_root, Some(home), false).is_ok());
+    }
+
+    #[test]
+    fn debug_builds_use_their_own_bootstrap_config() {
+        let config_dir =
+            PathBuf::from("/Users/me/Library/Application Support/com.otternote.desktop");
+        let bootstrapped = debug_bootstrapped(config_dir.clone());
+
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            bootstrapped,
+            PathBuf::from("/Users/me/Library/Application Support/com.otternote.desktop.dev")
+        );
+        #[cfg(not(debug_assertions))]
+        assert_eq!(bootstrapped, config_dir);
     }
 
     #[test]

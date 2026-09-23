@@ -87,17 +87,15 @@ describe('buildExportFileName', () => {
 });
 
 describe('buildNoteMarkdown', () => {
-  it('joins entries with horizontal rules', () => {
-    expect(buildNoteMarkdown('Shopping list', ['Milk', 'Bread'])).toBe(
-      '# Shopping list\n\nMilk\n\n---\n\nBread\n',
-    );
+  it('renders the title followed by the body', () => {
+    expect(buildNoteMarkdown('Shopping list', 'Milk\nBread')).toBe('# Shopping list\n\nMilk\nBread\n');
   });
 
-  it('trims trailing whitespace from entries', () => {
-    expect(buildNoteMarkdown('Note', ['line\n\n'])).toBe('# Note\n\nline\n');
+  it('trims trailing whitespace from the body', () => {
+    expect(buildNoteMarkdown('Note', 'line\n\n')).toBe('# Note\n\nline\n');
   });
 
-  it('handles notes without entries', () => {
-    expect(buildNoteMarkdown('Empty', [])).toBe('# Empty\n');
+  it('handles notes without a body', () => {
+    expect(buildNoteMarkdown('Empty', '')).toBe('# Empty\n');
   });
 });

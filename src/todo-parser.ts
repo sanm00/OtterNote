@@ -8,7 +8,16 @@ export type ParsedTodo = {
   status: TodoStatus;
 };
 
-export function parseTodosFromEntry(content: string): ParsedTodo[] {
+export function isTaskLine(line: string): boolean {
+  return taskPattern.test(line);
+}
+
+/** Title text of a task line, or `null` when the line is not a task. */
+export function todoTitleInLine(line: string): string | null {
+  return taskPattern.exec(line)?.[2].trim() ?? null;
+}
+
+export function parseTodosFromContent(content: string): ParsedTodo[] {
   return content
     .split('\n')
     .map((line) => {
@@ -22,7 +31,7 @@ export function parseTodosFromEntry(content: string): ParsedTodo[] {
     .filter((item): item is ParsedTodo => item !== null && item.title.length > 0);
 }
 
-export function updateTodoStatusInEntryContent(content: string, occurrenceIndex: number, status: TodoStatus) {
+export function updateTodoStatusInContent(content: string, occurrenceIndex: number, status: TodoStatus) {
   let taskLineIndex = -1;
   const nextMarker = status === 'done' ? 'x' : ' ';
 
@@ -44,7 +53,7 @@ export function updateTodoStatusInEntryContent(content: string, occurrenceIndex:
     .join('\n');
 }
 
-export function removeTodoFromEntryContent(content: string, occurrenceIndex: number) {
+export function removeTodoFromContent(content: string, occurrenceIndex: number) {
   let taskLineIndex = -1;
 
   return content

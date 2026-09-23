@@ -5,6 +5,7 @@ export type StorageInfo = {
   path: string;
   defaultPath: string;
   customPath?: string | null;
+  otherWindows?: number;
 };
 
 export type ImageAttachment = {
@@ -25,6 +26,7 @@ let lastScheduledAppState: string | null | undefined;
 let pendingAppStateWrite: { name: string; value: string } | null = null;
 let appStateWriteLoop: Promise<void> | null = null;
 let appStateHydrated = false;
+let storageEpoch = 0;
 
 export const isTauriRuntime = () =>
   typeof window !== 'undefined' && Boolean((window as TauriWindow).__TAURI_INTERNALS__);
@@ -35,6 +37,15 @@ function rememberPersistedAppState(value: string | null) {
   appStateHydrated = true;
 }
 
+/// Called after the active storage root moved. In-flight writes carrying the
+/// previous folder's snapshot are dropped instead of being copied forward.
+export function invalidatePersistedAppState() {
+  storageEpoch += 1;
+  pendingAppStateWrite = null;
+  lastPersistedAppState = null;
+  lastScheduledAppState = null;
+}
+
 function queueAppStateWrite(name: string, value: string) {
   // Zustand may update transient UI state while its asynchronous desktop
   // storage is still hydrating. Never let that default snapshot overwrite the
@@ -42,6 +53,8 @@ function queueAppStateWrite(name: string, value: string) {
   if (!appStateHydrated) {
     return Promise.resolve();
   }
+
+  const epoch = storageEpoch;
 
   if (value === lastPersistedAppState && !pendingAppStateWrite && !appStateWriteLoop) {
     return Promise.resolve();
@@ -61,6 +74,13 @@ function queueAppStateWrite(name: string, value: string) {
         const next = pendingAppStateWrite;
         pendingAppStateWrite = null;
         try {
+          if (epoch !== storageEpoch) {
+            // The storage root moved mid-write: this snapshot belongs to the
+            // previous folder and must not land in the new one.
+            lastPersistedAppState = null;
+            lastScheduledAppState = null;
+            continue;
+          }
           if (next.value !== lastPersistedAppState) {
             if (isTauriRuntime()) {
               await invoke('write_app_state', { value: next.value });

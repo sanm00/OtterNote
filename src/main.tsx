@@ -3,41 +3,18 @@ import ReactDOM from 'react-dom/client';
 import ReactMarkdown, { type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { visit } from 'unist-util-visit';
+import { type Root } from 'hast';
 import { EditorView } from '@codemirror/view';
 import { emit, listen } from '@tauri-apps/api/event';
-import { open as openDialog, save as saveDialog, ask as askDialog } from '@tauri-apps/plugin-dialog';
-import {
-  Download,
-  CheckSquare,
-  ChevronDown,
-  ChevronRight,
-  Clock3,
-  Database,
-  Copy,
-  FolderOpen,
-  HelpCircle,
-  Image as ImageIcon,
-  Keyboard,
-  NotebookText,
-  Pin,
-  Moon,
-  Upload,
-  RotateCcw,
-  Save,
-  Search,
-  Settings,
-  Trash2,
-  SunMedium,
-  FilePenLine,
-  FilePlus,
-  ListTodo,
-  X,
-} from 'lucide-react';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import './styles.css';
 import { createId } from './id';
-import { updateTodoStatusInEntryContent } from './todo-parser';
+import { collectTags } from './lib/tags';
+import { addDays, todayKey } from './lib/dates';
+import { updateTodoStatusInContent } from './todo-parser';
 import { attachmentFallbackCandidates, extractAttachmentReferences } from './lib/attachments';
 import {
   extractAltText,
@@ -58,15 +35,27 @@ import {
 } from './lib/markdown';
 import {
   defaultShortcuts,
+  migrateShortcuts,
   snapshotAppState,
   useAppStore,
   type AppStateSnapshot,
   type NavSection,
   type ThemeMode,
   type ShortcutAction,
+  type Note,
+  type Todo,
 } from './store';
+import { NoteInsights, NoteTags } from './components/NoteInsights';
+import { EmptyMessage, Page } from './components/ui';
+import { Icon } from './components/Icon';
+import { confirmDeletion } from './lib/confirm';
+import { downloadTextFile } from './lib/export-file';
+import { localeLabels, locales, useI18n, type Locale, type MessageKey } from './lib/i18n';
+import { PlanView } from './views/PlanView';
+import { ReviewView } from './views/ReviewView';
 import {
   getStorageInfo,
+  invalidatePersistedAppState,
   isTauriRuntime,
   listImageAttachments,
   deleteImageAttachment,
@@ -97,25 +86,23 @@ if ((import.meta as ImportMeta & { hot?: unknown }).hot && typeof window !== 'un
 }
 
 const PINNED_NOTE_AUTOSAVE_DELAY_MS = 5_000;
-const SIDEBAR_NOTES_PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_DELAY_MS = 180;
 const NOTE_TITLE_SAVE_DELAY_MS = 500;
 
-const navItems: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> =
-  [
-    { id: 'notes', label: 'Notes', icon: NotebookText },
-    { id: 'todos', label: 'ToDos', icon: ListTodo },
-  ];
+const navItems: Array<{ id: NavSection; labelKey: MessageKey; icon: 'calendar' | 'note' | 'bar-chart' }> = [
+  { id: 'plan', labelKey: 'nav.plan', icon: 'calendar' },
+  { id: 'notes', labelKey: 'nav.notes', icon: 'note' },
+  { id: 'review', labelKey: 'nav.review', icon: 'bar-chart' },
+];
 
 const auxiliaryNavItems: Array<{
   id: NavSection;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
+  labelKey: MessageKey;
+  icon: 'image' | 'settings' | 'help';
 }> = [
-  { id: 'timeline', label: 'Timeline', icon: Clock3 },
-  { id: 'images', label: 'Images', icon: ImageIcon },
-  { id: 'settings', label: 'Settings', icon: Settings },
-  { id: 'help', label: 'Help', icon: HelpCircle },
+  { id: 'images', labelKey: 'nav.images', icon: 'image' },
+  { id: 'settings', labelKey: 'nav.settings', icon: 'settings' },
+  { id: 'help', labelKey: 'nav.help', icon: 'help' },
 ];
 
 function App() {
@@ -136,17 +123,12 @@ function App() {
 }
 
 function WorkspaceApp() {
-  const hasContent = useAppStore((state) => state.notes.length > 0 || state.todos.length > 0);
   const activeSection = useAppStore((state) => state.activeSection);
   const query = useAppStore((state) => state.query.trim());
   const searchFocused = useAppStore((state) => state.searchFocused);
-  const notes = useAppStore((state) => state.notes);
-  const recentNoteIds = useAppStore((state) => state.recentNoteIds);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
-  const selectNote = useAppStore((state) => state.selectNote);
-  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   useKeyboardShortcuts();
-  useOpenLatestNoteOnStartup(notes, recentNoteIds, setActiveSection, selectNote, clearSelectedNote);
+  useOpenLatestNoteOnStartup(setActiveSection);
   const showSearchResults =
     (searchFocused || Boolean(query)) &&
     activeSection !== 'new' &&
@@ -155,20 +137,14 @@ function WorkspaceApp() {
     activeSection !== 'images';
 
   return (
-    <div className="app-shell flex h-screen text-slate-950">
+    <div className="app-shell flex h-screen">
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col">
         {showSearchResults ? <SearchResultsPage query={query} /> : null}
-        {activeSection === 'timeline' && !showSearchResults ? (
-          hasContent ? (
-            <Timeline />
-          ) : (
-            <TimelineEmptyState />
-          )
-        ) : null}
+        {activeSection === 'plan' && !showSearchResults ? <PlanView /> : null}
+        {activeSection === 'review' && !showSearchResults ? <ReviewView /> : null}
         {activeSection === 'new' && !showSearchResults ? <NewEntryPage /> : null}
         {activeSection === 'notes' && !showSearchResults ? <NotesWorkspace /> : null}
-        {activeSection === 'todos' && !showSearchResults ? <TodosPage /> : null}
         {activeSection === 'images' ? <ImagesPage /> : null}
         {activeSection === 'settings' ? <SettingsPage /> : null}
         {activeSection === 'help' ? <HelpPage /> : null}
@@ -201,13 +177,11 @@ function useKeyboardShortcuts() {
   const searchFocused = useAppStore((state) => state.searchFocused);
   const setSearchFocused = useAppStore((state) => state.setSearchFocused);
   const setQuery = useAppStore((state) => state.setQuery);
+  const focusCapture = useAppStore((state) => state.focusCapture);
 
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const config = {
-        ...defaultShortcuts,
-        ...shortcuts,
-      };
+      const config = migrateShortcuts(shortcuts);
 
       if (isShortcutRecording()) {
         return;
@@ -233,6 +207,15 @@ function useKeyboardShortcuts() {
         event.preventDefault();
         clearSelectedNote();
         setActiveSection('new');
+        return;
+      }
+
+      if (matchesShortcut(event, config.capture)) {
+        if (event.repeat) {
+          return;
+        }
+        event.preventDefault();
+        focusCapture();
         return;
       }
 
@@ -276,6 +259,7 @@ function useKeyboardShortcuts() {
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [
     clearSelectedNote,
+    focusCapture,
     searchFocused,
     setActiveSection,
     setQuery,
@@ -293,192 +277,141 @@ function Sidebar() {
   const query = useAppStore((state) => state.query);
   const setQuery = useAppStore((state) => state.setQuery);
   const notes = useAppStore((state) => state.notes);
-  const selectedNoteId = useAppStore((state) => state.selectedNoteId);
   const selectNote = useAppStore((state) => state.selectNote);
   const shortcuts = useAppStore((state) => state.shortcuts);
-  const [visibleNoteCount, setVisibleNoteCount] = React.useState(SIDEBAR_NOTES_PAGE_SIZE);
-  const logoSrc = '/app-logo-transparent.png';
+  const theme = useAppStore((state) => state.theme);
+  const setTheme = useAppStore((state) => state.setTheme);
+  const todos = useAppStore((state) => state.todos);
+  const { t } = useI18n();
+  const todayBadge = React.useMemo(() => {
+    const key = todayKey();
+    return todos.filter((todo) => todo.status !== 'done' && todo.due && todo.due <= key).length;
+  }, [todos]);
   const newShortcutLabel = normalizeShortcutLabel((shortcuts?.new ?? defaultShortcuts.new) || '');
+  const captureShortcutLabel = normalizeShortcutLabel((shortcuts?.capture ?? defaultShortcuts.capture) || '');
 
   const sortedNotes = React.useMemo(
     () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [notes],
   );
-  const visibleNotes = sortedNotes.slice(0, visibleNoteCount);
-
-  const loadMoreNotes = (event: React.UIEvent<HTMLDivElement>) => {
-    const list = event.currentTarget;
-    const isNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight <= 48;
-    if (!isNearBottom || visibleNoteCount >= sortedNotes.length) return;
-
-    setVisibleNoteCount((count) => Math.min(count + SIDEBAR_NOTES_PAGE_SIZE, sortedNotes.length));
-  };
-
   return (
-    <aside className="sidebar-panel flex w-80 shrink-0 flex-col border-r">
-      <div className="px-3 pt-8">
-        <div className="px-1 pb-1.5">
-          <div className="flex items-center gap-2">
+    <aside className="sidebar-panel ds-sidebar flex shrink-0 flex-col border-r">
+      <div className="ds-brand">
+        <button
+          type="button"
+          className="ds-brand-button"
+          onClick={() => {
+            const latest = sortedNotes[0];
+            if (latest) {
+              selectNote(latest.id);
+              return;
+            }
+
+            clearSelectedNote();
+            setActiveSection('new');
+          }}
+        >
+          <img className="ds-brand-mark" src="/app-logo-transparent.png" alt="" aria-hidden="true" />
+          <span className="min-w-0">
+            <span className="ds-brand-name block truncate">OtterNote</span>
+            <span className="ds-brand-tagline block truncate">{t('sidebar.tagline')}</span>
+          </span>
+        </button>
+      </div>
+
+      <button
+        type="button"
+        className="ds-btn-new"
+        onClick={() => {
+          clearSelectedNote();
+          setActiveSection('new');
+        }}
+      >
+        <span aria-hidden="true">＋</span>
+        {t('sidebar.newNote')}
+        {newShortcutLabel ? <span className="ds-faint text-[11px]">{newShortcutLabel}</span> : null}
+      </button>
+
+      <label className="ds-search">
+        <span className="shrink-0 flex items-center" aria-hidden="true">
+          <Icon name="search" size={14} />
+        </span>
+        <input
+          data-search-input="true"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onFocus={() => {
+            setSearchFocused(true);
+            setActiveSection('notes');
+          }}
+          onBlur={() => setSearchFocused(false)}
+          placeholder={t('sidebar.searchPlaceholder')}
+        />
+      </label>
+
+      <nav className="ds-nav">
+        {navItems.map((item) => {
+          const active = activeSection === item.id;
+          return (
             <button
+              key={item.id}
               type="button"
-              className="flex min-w-0 items-center gap-3 text-left"
+              className={`ds-nav-item ${active ? 'is-active' : ''}`}
               onClick={() => {
-                const latest = sortedNotes[0];
-                if (latest) {
-                  selectNote(latest.id);
-                  return;
+                setActiveSection(item.id);
+                if (item.id === 'notes') {
+                  clearSelectedNote();
                 }
-
-                clearSelectedNote();
-                setActiveSection('new');
               }}
             >
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden">
-                <img src={logoSrc} alt="" aria-hidden="true" className="h-7 w-7 rounded-md object-cover" />
+              <span className="ds-nav-icon" aria-hidden="true">
+                <Icon name={item.icon} size={16} />
               </span>
-              <div className="min-w-0">
-                <div className="truncate text-base font-semibold text-slate-950">OtterNote</div>
-                <div className="truncate text-[11px] text-slate-500">Notes, todo, timeline</div>
-              </div>
+              <span className="truncate">{t(item.labelKey)}</span>
+              {item.id === 'plan' && todayBadge > 0 ? (
+                <span className="ds-nav-badge">{todayBadge}</span>
+              ) : null}
             </button>
-            <button
-              type="button"
-              className="icon-button tooltip-button ml-auto shrink-0"
-              data-tooltip={newShortcutLabel ? `New note · ${newShortcutLabel}` : 'New note'}
-              onClick={() => {
-                clearSelectedNote();
-                setActiveSection('new');
-              }}
-              aria-label="New note"
-            >
-              <FilePlus className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="px-3">
-        <label className="relative block">
-          <Search className="pointer-events-none absolute left-3 top-2 h-4 w-4 text-slate-400" />
-          <input
-            data-search-input="true"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onFocus={() => {
-              setSearchFocused(true);
-              setActiveSection('notes');
-            }}
-            onBlur={() => setSearchFocused(false)}
-            placeholder="Search notes, todos..."
-            className="sidebar-search h-9 w-full rounded-md border pl-9 pr-3 text-sm outline-none focus:ring-2"
-          />
-        </label>
-      </div>
-
-      <section className="flex min-h-0 flex-1 flex-col px-3 pt-1">
-        <div className="sidebar-section-label mb-1 flex items-center justify-between px-1 text-[11px] font-medium text-slate-500">
-          <span>Notes</span>
-          <span aria-label={`${sortedNotes.length} notes`}>{sortedNotes.length}</span>
-        </div>
-        {sortedNotes.length === 0 ? (
-          <p className="sidebar-empty-note">No notes yet.</p>
-        ) : (
-          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1" onScroll={loadMoreNotes}>
-            {visibleNotes.map((note) => (
-              <button
-                key={note.id}
-                className={`sidebar-item w-full rounded-md py-1.5 pl-4 pr-3 text-left text-[13px] leading-5 ${
-                  selectedNoteId === note.id ? 'sidebar-selected' : 'text-slate-700 hover:bg-slate-50'
-                }`}
-                onClick={() => selectNote(note.id)}
-              >
-                <div className="truncate font-medium">{displayTitle(note.title)}</div>
-                <div
-                  className={`truncate text-[10px] leading-4 ${selectedNoteId === note.id ? 'sidebar-selected-meta' : 'text-slate-500'}`}
-                >
-                  {formatDate(note.updatedAt)}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <nav className="border-t border-[color:var(--app-border-soft)] px-3 py-2">
-        <div className="sidebar-section-label mb-0.5 px-1 text-[10px] font-medium text-slate-500">
-          Workspace
-        </div>
-        <div className="space-y-0">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = activeSection === item.id;
-            return (
-              <button
-                key={item.id}
-                className={`sidebar-item flex w-full items-center gap-2 rounded-md py-1 pl-4 pr-3 text-[13px] font-medium leading-5 ${
-                  active ? 'sidebar-selected' : 'text-slate-700 hover:bg-slate-50'
-                }`}
-                onClick={() => {
-                  setActiveSection(item.id);
-                  if (item.id === 'notes') {
-                    clearSelectedNote();
-                  }
-                }}
-              >
-                <Icon className={`h-4 w-4 ${active ? '' : 'text-slate-500'}`} />
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-1.5 flex items-center justify-start gap-1.5 px-1">
-          {auxiliaryNavItems.map((item) => {
-            const Icon = item.icon;
-            const active = activeSection === item.id;
-            return (
-              <button
-                key={item.id}
-                className={`sidebar-aux-nav-item tooltip-button tooltip-above ${active ? 'sidebar-aux-nav-active' : ''}`}
-                data-tooltip={item.label}
-                onClick={() => setActiveSection(item.id)}
-                aria-label={item.label}
-                type="button"
-              >
-                <Icon className="h-4 w-4" />
-              </button>
-            );
-          })}
-        </div>
+          );
+        })}
       </nav>
+
+      <div className="ds-sidebar-foot">
+        <div className="ds-capture-hint">
+          <kbd>{newShortcutLabel}</kbd> {t('sidebar.captureNote')} · <kbd>{captureShortcutLabel}</kbd>{' '}
+          {t('sidebar.captureTodo')}
+        </div>
+        <button
+          type="button"
+          className="ds-ghost-btn"
+          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+        >
+          <span aria-hidden="true">
+            <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={15} />
+          </span>
+          {t('settings.appearance')}
+        </button>
+        {auxiliaryNavItems.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={`ds-ghost-btn ${activeSection === item.id ? 'is-active' : ''}`}
+            onClick={() => setActiveSection(item.id)}
+          >
+            <span aria-hidden="true">
+              <Icon name={item.icon} size={15} />
+            </span>
+            {t(item.labelKey)}
+          </button>
+        ))}
+      </div>
     </aside>
   );
 }
 
-function TimelineEmptyState() {
-  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
-  const setActiveSection = useAppStore((state) => state.setActiveSection);
-
-  return (
-    <Page title="Timeline" subtitle="Notes grouped by time">
-      <div className="mx-auto w-full max-w-3xl">
-        <EmptyMessage
-          title="No notes yet"
-          message="Create notes to populate the timeline."
-          icon={Clock3}
-          actionLabel="New note"
-          onAction={() => {
-            clearSelectedNote();
-            setActiveSection('new');
-          }}
-        />
-      </div>
-    </Page>
-  );
-}
-
 function NewEntryPage() {
+  const { t } = useI18n();
   const createNote = useAppStore((state) => state.createNote);
-  const createNoteWithEntry = useAppStore((state) => state.createNoteWithEntry);
   const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
   const [titleDraft, setTitleDraft] = React.useState('');
@@ -506,15 +439,15 @@ function NewEntryPage() {
       if (!image) return;
 
       insertMarkdownAtCursor(editorViewRef.current, `![${image.altText}](${image.markdownUrl})`, updateDraft);
-      setStatus(`Image inserted: ${image.altText}`);
+      setStatus(t('editor.imageInserted', { name: image.altText }));
     } catch (currentError) {
       window.alert(errorMessage(currentError));
     }
-  }, [updateDraft]);
+  }, [t, updateDraft]);
 
   const pinNewNote = React.useCallback(async () => {
     if (!isTauriRuntime()) {
-      window.alert('Pinning notes is available in the desktop app.');
+      window.alert(t('editor.desktopOnly'));
       return;
     }
 
@@ -523,27 +456,26 @@ function NewEntryPage() {
     } catch (currentError) {
       window.alert(errorMessage(currentError));
     }
-  }, []);
+  }, [t]);
 
   const saveDraft = React.useCallback(() => {
-    const content = draft.trim();
+    // CodeMirror commits its value through onChange asynchronously, so the
+    // draft state can lag one frame behind the view. Read the live document
+    // from the editor when it is available to avoid dropping the last keystrokes.
+    const content = (editorViewRef.current?.state.doc.toString() ?? draft).trim();
     const title = titleDraft.trim();
     if (!content && !title) {
       return;
     }
 
-    if (content) {
-      createNoteWithEntry(content, title);
-    } else {
-      createNote(title);
-    }
+    createNote(title, content);
     setTitleDraft('');
     setDraft('');
-    setStatus('Saved');
-  }, [createNote, createNoteWithEntry, draft, titleDraft]);
+    setStatus(t('editor.saved'));
+  }, [createNote, draft, t, titleDraft]);
 
   const cancelDraft = React.useCallback(() => {
-    if (hasDraftContent && !window.confirm('Discard this unsaved note?')) {
+    if (hasDraftContent && !window.confirm(t('editor.discardDraft'))) {
       return;
     }
     setTitleDraft('');
@@ -551,7 +483,7 @@ function NewEntryPage() {
     setStatus('');
     clearSelectedNote();
     setActiveSection('notes');
-  }, [clearSelectedNote, hasDraftContent, setActiveSection]);
+  }, [clearSelectedNote, hasDraftContent, setActiveSection, t]);
 
   React.useEffect(() => {
     const onSave = () => saveDraft();
@@ -573,7 +505,7 @@ function NewEntryPage() {
   return (
     <div className="app-workspace relative flex min-h-0 flex-1 flex-col">
       <DocumentHeader
-        subtitle="Write quickly, then save to create a note."
+        subtitle={t('editor.newSubtitle')}
         titleInput={
           <input
             value={titleDraft}
@@ -584,7 +516,7 @@ function NewEntryPage() {
                 editorViewRef.current?.focus();
               }
             }}
-            placeholder="Untitled Note"
+            placeholder={t('editor.newTitle')}
             className="document-title-input"
           />
         }
@@ -599,12 +531,12 @@ function NewEntryPage() {
             saveDisabled={!hasDraftContent}
             isDirty={hasDraftContent}
             onDelete={undefined}
-            saveLabel="Save"
+            saveLabel={t('editor.save')}
           />
         }
       />
       <StatusToast message={status} />
-      <div className="flex min-h-0 flex-1 px-6 py-5">
+      <div className="flex min-h-0 flex-1 px-6 pb-16 pt-5">
         <div className="editor-workspace flex min-h-0 flex-1 w-full">
           <div className="editor-shell">
             <CodeMirror
@@ -621,59 +553,12 @@ function NewEntryPage() {
                 editorViewRef.current = view;
                 view.focus();
               }}
-              placeholder={'Start writing...\n\n- [ ] Add a ToDo'}
+              placeholder={t('editor.placeholder')}
             />
           </div>
         </div>
       </div>
     </div>
-  );
-}
-
-function Timeline() {
-  const notes = useAppStore((state) => state.notes);
-  const selectNote = useAppStore((state) => state.selectNote);
-  const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
-  const setActiveSection = useAppStore((state) => state.setActiveSection);
-  const groups = React.useMemo(() => groupNotesByDate(notes), [notes]);
-
-  return (
-    <Page title="Timeline" subtitle="Notes grouped by time">
-      <div className="mx-auto w-full max-w-3xl space-y-2.5">
-        {groups.length === 0 ? (
-          <EmptyMessage
-            title="No notes yet"
-            message="Create notes to populate the timeline."
-            icon={Clock3}
-            actionLabel="New note"
-            onAction={() => {
-              clearSelectedNote();
-              setActiveSection('new');
-            }}
-          />
-        ) : (
-          groups.map((group) => (
-            <section key={group.label}>
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                {group.label}
-              </div>
-              <div className="space-y-2">
-                {group.notes.map((note) => (
-                  <button
-                    key={note.id}
-                    className="content-card content-card-hover w-full rounded-lg px-4 py-3 text-left"
-                    onClick={() => selectNote(note.id)}
-                  >
-                    <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
-                    <div className="mt-1 text-xs text-slate-500">Updated {formatTime(note.updatedAt)}</div>
-                  </button>
-                ))}
-              </div>
-            </section>
-          ))
-        )}
-      </div>
-    </Page>
   );
 }
 
@@ -684,91 +569,280 @@ function NotesWorkspace() {
   return selectedNote ? <NoteDetail noteId={selectedNote.id} /> : <NotesListPage />;
 }
 
+const notesGroupLabel = {
+  today: 'notes.group.today',
+  yesterday: 'notes.group.yesterday',
+  week: 'notes.group.week',
+  earlier: 'notes.group.earlier',
+} as const;
+
 function NotesListPage() {
+  const { t } = useI18n();
   const notes = useAppStore((state) => state.notes);
-  const entries = useAppStore((state) => state.entries);
   const todos = useAppStore((state) => state.todos);
   const selectNote = useAppStore((state) => state.selectNote);
   const clearSelectedNote = useAppStore((state) => state.clearSelectedNote);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
+  const [activeTag, setActiveTag] = React.useState<string | null>(null);
   const sortedNotes = React.useMemo(
     () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [notes],
   );
+  const allTags = React.useMemo(() => collectTags(notes.map((note) => note.content)), [notes]);
+  const tagsByNoteId = React.useMemo(() => {
+    const next = new Map<string, string[]>();
+    for (const note of sortedNotes) {
+      next.set(
+        note.id,
+        collectTags([note.content]).map((item) => item.tag),
+      );
+    }
+    return next;
+  }, [sortedNotes]);
   const previewByNoteId = React.useMemo(() => {
     const next = new Map<string, string>();
     for (const note of sortedNotes) {
-      next.set(note.id, summarizeNotePreview(note.id, entries, todos));
+      next.set(note.id, compactPreviewText(note.content));
     }
     return next;
-  }, [entries, sortedNotes, todos]);
+  }, [sortedNotes]);
+  const openTodoByNoteId = React.useMemo(() => {
+    const next = new Map<string, number>();
+    for (const todo of todos) {
+      if (todo.noteId && todo.status !== 'done') {
+        next.set(todo.noteId, (next.get(todo.noteId) ?? 0) + 1);
+      }
+    }
+    return next;
+  }, [todos]);
+  const visibleNotes = React.useMemo(
+    () =>
+      activeTag ? sortedNotes.filter((note) => tagsByNoteId.get(note.id)?.includes(activeTag)) : sortedNotes,
+    [activeTag, sortedNotes, tagsByNoteId],
+  );
+  const noteGroups = React.useMemo(() => {
+    const today = todayKey();
+    const yesterday = addDays(today, -1);
+    const weekAgo = addDays(today, -6);
+    const groups = new Map<keyof typeof notesGroupLabel, Note[]>();
+    for (const note of visibleNotes) {
+      const day = note.updatedAt.slice(0, 10);
+      const key: keyof typeof notesGroupLabel =
+        day >= today ? 'today' : day >= yesterday ? 'yesterday' : day >= weekAgo ? 'week' : 'earlier';
+      const items = groups.get(key);
+      if (items) {
+        items.push(note);
+      } else {
+        groups.set(key, [note]);
+      }
+    }
+    return (Object.keys(notesGroupLabel) as Array<keyof typeof notesGroupLabel>)
+      .map((key) => ({ key, notes: groups.get(key) ?? [] }))
+      .filter((group) => group.notes.length > 0);
+  }, [visibleNotes]);
+  const recentCreatedCount = React.useMemo(() => {
+    const cutoff = addDays(todayKey(), -6);
+    return notes.filter((note) => note.createdAt.slice(0, 10) >= cutoff).length;
+  }, [notes]);
 
   return (
-    <Page title="Notes" subtitle="All notes">
-      <div className="mx-auto w-full max-w-3xl space-y-2.5">
-        {sortedNotes.length === 0 ? (
-          <EmptyMessage
-            title="No notes yet"
-            message="Create a note to start writing."
-            icon={NotebookText}
-            actionLabel="New note"
-            onAction={() => {
-              clearSelectedNote();
-              setActiveSection('new');
-            }}
-          />
-        ) : (
-          sortedNotes.map((note) => (
-            <button
-              key={note.id}
-              className="note-list-card content-card content-card-hover w-full rounded-lg px-4 py-3 text-left"
-              onClick={() => selectNote(note.id)}
-            >
-              <div className="text-sm font-medium text-slate-900">{displayTitle(note.title)}</div>
-              <div className="note-list-preview mt-1 text-sm text-slate-600">
-                {previewByNoteId.get(note.id) ?? 'No content yet.'}
-              </div>
-              <div className="mt-1 text-xs text-slate-500">
-                Created {formatDate(note.createdAt)} · Updated {formatDate(note.updatedAt)}
-              </div>
-            </button>
-          ))
-        )}
+    <Page title={t('nav.notes')} subtitle={t('notes.subtitle')}>
+      <div className="ds-stats">
+        <div className="ds-stat">
+          <div className="n">{sortedNotes.length}</div>
+          <div className="l">{t('notes.stat.total')}</div>
+        </div>
+        <div className="ds-stat">
+          <div className="n">{recentCreatedCount}</div>
+          <div className="l">{t('notes.stat.recent')}</div>
+        </div>
+        <div className="ds-stat">
+          <div className="n">
+            {todos.filter((todo) => todo.status !== 'done').length}
+            <small>/{todos.length}</small>
+          </div>
+          <div className="l">{t('notes.stat.todos')}</div>
+        </div>
+        <div className="ds-stat">
+          <div className="n">{allTags.length}</div>
+          <div className="l">{t('notes.stat.tags')}</div>
+        </div>
       </div>
+
+      <div className="ds-chips">
+        <button
+          type="button"
+          className={`ds-chip ${activeTag === null ? 'is-active' : ''}`}
+          onClick={() => setActiveTag(null)}
+        >
+          {t('notes.all')}
+        </button>
+        {allTags.map((item) => (
+          <button
+            key={item.tag}
+            type="button"
+            className={`ds-chip ${activeTag === item.tag ? 'is-active' : ''}`}
+            onClick={() => setActiveTag(item.tag)}
+          >
+            #{item.tag}
+          </button>
+        ))}
+      </div>
+
+      {visibleNotes.length === 0 ? (
+        <EmptyMessage
+          title={t('notes.empty')}
+          message={activeTag ? t('notes.emptyTag') : t('notes.emptyHint')}
+          icon={<Icon name="note" size={20} />}
+          actionLabel={t('notes.newNote')}
+          onAction={() => {
+            clearSelectedNote();
+            setActiveSection('new');
+          }}
+        />
+      ) : (
+        <div className="ds-note-groups">
+          {noteGroups.map((group) => (
+            <section key={group.key} className="ds-note-group">
+              <div className="ds-note-group-head">
+                <span className="g">{t(notesGroupLabel[group.key])}</span>
+                <span className="line" />
+                <span className="c">{group.notes.length}</span>
+              </div>
+              <div className="ds-note-list ds-note-grid">
+                {group.notes.map((note) => {
+                  const preview = previewByNoteId.get(note.id) ?? '';
+                  const noteTags = tagsByNoteId.get(note.id) ?? [];
+                  const openTodos = openTodoByNoteId.get(note.id) ?? 0;
+                  return (
+                    <button
+                      key={note.id}
+                      type="button"
+                      className="ds-note-card"
+                      onClick={() => selectNote(note.id)}
+                    >
+                      <span className="ds-note-card-main">
+                        <span className="ds-note-card-title">{displayTitle(note.title)}</span>
+                        {preview ? <span className="ds-note-card-preview">{preview}</span> : null}
+                        <span className="ds-note-card-meta">
+                          <span className="ds-note-card-date">
+                            {formatDate(note.updatedAt).replace(' ', ' · ')}
+                          </span>
+                          {openTodos > 0 ? (
+                            <span className="ds-note-card-todos" title={t('notes.stat.todos')}>
+                              {openTodos} ☑
+                            </span>
+                          ) : null}
+                        </span>
+                        {noteTags.length > 0 ? (
+                          <span className="ds-note-card-tags">
+                            {noteTags.map((tag) => (
+                              <span key={tag} className="ds-tag">
+                                #{tag}
+                              </span>
+                            ))}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="ds-note-card-arrow" aria-hidden="true">
+                        ›
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
     </Page>
   );
 }
 
 function NoteDetail({ noteId }: { noteId: string }) {
+  const { t } = useI18n();
   const note = useAppStore((state) => state.notes.find((item) => item.id === noteId));
-  const allEntries = useAppStore((state) => state.entries);
   const updateNoteTitle = useAppStore((state) => state.updateNoteTitle);
-  const addEntry = useAppStore((state) => state.addEntry);
+  const updateNoteContent = useAppStore((state) => state.updateNoteContent);
   const deleteNote = useAppStore((state) => state.deleteNote);
   const [bundle, setBundle] = React.useState<NoteBundleData | null>(null);
   const [titleDraft, setTitleDraft] = React.useState(note?.title ?? '');
   const [isEditing, setIsEditing] = React.useState(false);
-  const [draftEntryId, setDraftEntryId] = React.useState<string | null>(null);
   const [draftContent, setDraftContent] = React.useState('');
   const [status, setStatus] = React.useState('');
   const [showDeleteConfirmation, setShowDeleteConfirmation] = React.useState(false);
   const editorViewRef = React.useRef<EditorView | null>(null);
-  const entries = React.useMemo(() => {
-    if (bundle) {
-      return bundle.entries;
-    }
+  // Snapshot of the saved body when editing began; compared against the live
+  // draft to decide whether there are unsaved changes.
+  const [editingBaseline, setEditingBaseline] = React.useState<string | null>(null);
+  // While editing, the draft is authoritative: a checkbox toggled in preview
+  // would otherwise rewrite the saved body and clobber unsaved edits.
+  const content = isEditing ? draftContent : (bundle?.note.content ?? note?.content ?? '');
+  const hasUnsavedChanges = isEditing && draftContent !== (editingBaseline ?? content);
+  const canSaveDraft = isEditing && hasUnsavedChanges;
 
-    return allEntries.filter((entry) => entry.noteId === noteId);
-  }, [allEntries, bundle, noteId]);
-  const originalDraftContent = React.useMemo(() => {
-    if (!isEditing) return '';
-    if (draftEntryId) {
-      return entries.find((entry) => entry.id === draftEntryId)?.content ?? '';
+  // In-note find (preview mode only): highlight matches, jump with Cmd+F.
+  const [findOpen, setFindOpen] = React.useState(false);
+  const [findQuery, setFindQuery] = React.useState('');
+  const [findIndex, setFindIndex] = React.useState(0);
+  const [findCount, setFindCount] = React.useState(0);
+  const findInputRef = React.useRef<HTMLInputElement>(null);
+
+  const openFind = React.useCallback(() => {
+    setFindOpen(true);
+    window.setTimeout(() => findInputRef.current?.focus(), 0);
+  }, []);
+
+  React.useEffect(() => {
+    setFindQuery('');
+    setFindIndex(0);
+    setFindCount(0);
+    setFindOpen(false);
+  }, [noteId, isEditing]);
+
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === 'f' && (event.metaKey || event.ctrlKey)) {
+        if (isEditing) {
+          return;
+        }
+        event.preventDefault();
+        openFind();
+        return;
+      }
+      if (!findOpen) {
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setFindOpen(false);
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        if (findCount === 0) {
+          return;
+        }
+        if (event.shiftKey) {
+          setFindIndex((current) => (current - 1 + findCount) % findCount);
+        } else {
+          setFindIndex((current) => (current + 1) % findCount);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [findCount, findOpen, isEditing, openFind]);
+
+  React.useEffect(() => {
+    if (findCount === 0) {
+      setFindIndex(0);
+      return;
     }
-    return '';
-  }, [draftEntryId, entries, isEditing]);
-  const hasUnsavedEntryChanges = isEditing && draftContent !== originalDraftContent;
-  const canSaveDraft = isEditing && draftContent.trim().length > 0 && hasUnsavedEntryChanges;
+    setFindIndex((current) => Math.min(current, findCount - 1));
+  }, [findCount]);
+
+  const normalizedFindQuery = findQuery.trim();
 
   React.useEffect(() => {
     setTitleDraft(note?.title ?? '');
@@ -810,14 +884,12 @@ function NoteDetail({ noteId }: { noteId: string }) {
   React.useEffect(() => {
     editorViewRef.current = null;
     setStatus('');
+    setBundle(null);
     if (!isEditing) {
       return;
     }
 
-    const nextEntries = allEntries.filter((entry) => entry.noteId === noteId);
-    const firstEntry = nextEntries[0];
-    setDraftEntryId(firstEntry?.id ?? null);
-    setDraftContent(firstEntry?.content ?? '');
+    setDraftContent(useAppStore.getState().notes.find((item) => item.id === noteId)?.content ?? '');
   }, [noteId]);
 
   const deleteCurrentNote = React.useCallback(() => {
@@ -829,22 +901,20 @@ function NoteDetail({ noteId }: { noteId: string }) {
     if (!note) return;
     deleteNote(note.id);
     setShowDeleteConfirmation(false);
+    // Tell sibling windows to drop the deleted note from their in-memory
+    // copies immediately, before any of them flushes a stale snapshot.
+    void notifyAppStateChanged();
   }, [deleteNote, note]);
 
   const exportCurrentNote = React.useCallback(async () => {
     if (!note) return;
 
-    const markdown = buildNoteMarkdown(
-      note.title,
-      isEditing
-        ? mergeDraftEntries(entries, draftEntryId, draftContent)
-        : entries.map((entry) => entry.content),
-    );
+    const markdown = buildNoteMarkdown(note.title, isEditing ? draftContent : content);
     const fileName = buildExportFileName(note.title);
 
     if (isTauriRuntime()) {
       const selected = await saveDialog({
-        title: 'Export note as markdown',
+        title: t('editor.exportDialog'),
         defaultPath: fileName,
         filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
       });
@@ -858,13 +928,13 @@ function NoteDetail({ noteId }: { noteId: string }) {
     }
 
     downloadTextFile(markdown, fileName, 'text/markdown');
-  }, [draftContent, draftEntryId, entries, isEditing, note]);
+  }, [content, draftContent, isEditing, note, t]);
 
   const pinCurrentNote = React.useCallback(async () => {
     if (!note) return;
 
     if (!isTauriRuntime()) {
-      window.alert('Pinning notes is available in the desktop app.');
+      window.alert(t('editor.desktopOnly'));
       return;
     }
 
@@ -873,39 +943,50 @@ function NoteDetail({ noteId }: { noteId: string }) {
     } catch (currentError) {
       window.alert(errorMessage(currentError));
     }
-  }, [note]);
+  }, [note, t]);
 
   const startEditing = React.useCallback(() => {
     if (!note) return;
-    const firstEntry = entries[0];
-    setDraftEntryId(firstEntry?.id ?? null);
-    setDraftContent(firstEntry?.content ?? '');
+    setEditingBaseline(content);
+    setDraftContent(content);
     setIsEditing(true);
-  }, [entries, note]);
+  }, [content, note]);
 
   const finishEditing = React.useCallback(() => {
-    setDraftEntryId(null);
+    setEditingBaseline(null);
     setDraftContent('');
     setIsEditing(false);
   }, []);
 
   const cancelEditing = React.useCallback(() => {
-    if (hasUnsavedEntryChanges && !window.confirm('Discard unsaved changes?')) {
+    if (hasUnsavedChanges && !window.confirm(t('editor.discardChanges'))) {
       return;
     }
     finishEditing();
-  }, [finishEditing, hasUnsavedEntryChanges]);
+  }, [finishEditing, hasUnsavedChanges, t]);
 
   const saveDraft = React.useCallback(() => {
-    if (!note || !canSaveDraft) return;
-    if (draftEntryId) {
-      useAppStore.getState().updateEntry(draftEntryId, draftContent);
-    } else {
-      addEntry(note.id, draftContent);
+    if (!note) return;
+    // Read the live document: CodeMirror's onChange can lag one frame behind,
+    // which would otherwise drop the final keystrokes on save.
+    const draftValue = editorViewRef.current?.state.doc.toString() ?? draftContent;
+    if (draftValue === (editingBaseline ?? content)) {
+      finishEditing();
+      return;
     }
-    setStatus('Saved');
+    updateNoteContent(note.id, draftValue);
+    setStatus(t('editor.saved'));
     finishEditing();
-  }, [addEntry, canSaveDraft, draftContent, draftEntryId, finishEditing, note]);
+  }, [content, draftContent, editingBaseline, finishEditing, note, t, updateNoteContent]);
+
+  const togglePreviewTodo = React.useCallback(
+    (occurrenceIndex: number, done: boolean) => {
+      if (!note) return;
+      const nextContent = updateTodoStatusInContent(content, occurrenceIndex, done ? 'done' : 'todo');
+      updateNoteContent(note.id, nextContent);
+    },
+    [content, note, updateNoteContent],
+  );
 
   const insertImage = React.useCallback(async () => {
     try {
@@ -917,11 +998,11 @@ function NoteDetail({ noteId }: { noteId: string }) {
         `![${image.altText}](${image.markdownUrl})`,
         setDraftContent,
       );
-      setStatus(`Image inserted: ${image.altText}`);
+      setStatus(t('editor.imageInserted', { name: image.altText }));
     } catch (currentError) {
       window.alert(errorMessage(currentError));
     }
-  }, []);
+  }, [t]);
 
   React.useEffect(() => {
     const onEdit = () => startEditing();
@@ -960,7 +1041,8 @@ function NoteDetail({ noteId }: { noteId: string }) {
   return (
     <div className="app-workspace relative flex min-h-0 flex-1 flex-col">
       <DocumentHeader
-        subtitle={`Updated ${formatDate(note.updatedAt)}`}
+        meta={<NoteTags noteId={noteId} />}
+        subtitle={t('notes.updatedAt', { date: formatDate(note.updatedAt) })}
         titleInput={
           <div className="flex items-center gap-3">
             <input
@@ -979,7 +1061,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
                   editorViewRef.current?.focus();
                 }
               }}
-              placeholder="Untitled Note"
+              placeholder={t('editor.newTitle')}
               className="document-title-input"
             />
           </div>
@@ -988,6 +1070,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
           <WorkspaceToolbar
             mode={isEditing ? 'edit' : 'preview'}
             showEditButton={true}
+            onFind={openFind}
             onExport={exportCurrentNote}
             onPin={pinCurrentNote}
             onInsertImage={isEditing ? insertImage : undefined}
@@ -995,15 +1078,67 @@ function NoteDetail({ noteId }: { noteId: string }) {
             onEdit={startEditing}
             onCancel={isEditing ? cancelEditing : undefined}
             saveDisabled={isEditing ? !canSaveDraft : false}
-            isDirty={hasUnsavedEntryChanges}
+            isDirty={hasUnsavedChanges}
             onDelete={deleteCurrentNote}
-            saveLabel="Save"
+            saveLabel={t('editor.save')}
           />
         }
       />
       <StatusToast message={status} />
-      <div className={`min-h-0 flex-1 px-6 py-5 ${isEditing ? 'flex' : 'overflow-y-auto'}`}>
-        <div className={`w-full ${isEditing ? 'editor-workspace flex min-h-0 flex-1' : 'space-y-3.5 px-3'}`}>
+      {!isEditing && findOpen ? (
+        <div className="find-bar" role="search" aria-label={t('find.searchInNote')}>
+          <span className="find-bar-icon" aria-hidden="true">
+            <Icon name="search" size={13} />
+          </span>
+          <input
+            ref={findInputRef}
+            value={findQuery}
+            onChange={(event) => {
+              setFindQuery(event.target.value);
+              setFindIndex(0);
+            }}
+            placeholder={t('find.placeholder')}
+            aria-label={t('find.searchInNote')}
+            className="find-bar-input"
+          />
+          <span className="find-bar-count" aria-live="polite">
+            {findCount > 0 ? t('find.count', { n: findIndex + 1, m: findCount }) : `0 / 0`}
+          </span>
+          <button
+            type="button"
+            className="find-bar-btn"
+            onClick={() =>
+              setFindIndex((current) => (findCount > 0 ? (current - 1 + findCount) % findCount : current))
+            }
+            disabled={findCount === 0}
+            aria-label={t('find.prev')}
+            title={t('find.prev')}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            className="find-bar-btn"
+            onClick={() => setFindIndex((current) => (findCount > 0 ? (current + 1) % findCount : current))}
+            disabled={findCount === 0}
+            aria-label={t('find.next')}
+            title={t('find.next')}
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            className="find-bar-btn find-bar-close"
+            onClick={() => setFindOpen(false)}
+            aria-label={t('find.close')}
+            title={t('find.close')}
+          >
+            ✕
+          </button>
+        </div>
+      ) : null}
+      <div className={`min-h-0 flex-1 px-7 pb-16 pt-5 ${isEditing ? 'flex' : 'overflow-y-auto'}`}>
+        <div className={`w-full ${isEditing ? 'editor-workspace flex min-h-0 flex-1' : 'space-y-3.5'}`}>
           {isEditing ? (
             <div className="editor-shell">
               <CodeMirror
@@ -1020,19 +1155,23 @@ function NoteDetail({ noteId }: { noteId: string }) {
                 onCreateEditor={(view) => {
                   editorViewRef.current = view;
                 }}
-                placeholder={'Add note content...\n\n- [ ] Add a ToDo'}
+                placeholder={t('editor.addContent')}
               />
             </div>
-          ) : entries.length === 0 ? (
-            <article className="entry-card">
-              <div className="flex items-start gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="document-empty-hint">No note text. This note only has a title.</div>
-                </div>
-              </div>
-            </article>
           ) : (
-            entries.map((entry) => <EntryCard key={entry.id} entryId={entry.id} />)
+            <div className="ds-view">
+              <article className="entry-card">
+                <NoteBodyPreview
+                  content={content}
+                  emptyMessage={t('editor.emptyNote')}
+                  onTodoToggle={(occurrence, done) => togglePreviewTodo(occurrence, done)}
+                  findQuery={normalizedFindQuery}
+                  activeIndex={findCount > 0 ? findIndex : undefined}
+                  onMatchCount={setFindCount}
+                />
+              </article>
+              <NoteInsights noteId={noteId} />
+            </div>
           )}
         </div>
       </div>
@@ -1042,31 +1181,25 @@ function NoteDetail({ noteId }: { noteId: string }) {
           role="presentation"
         >
           <div
-            className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl"
+            className="ds-card w-full max-w-sm p-5"
             role="dialog"
             aria-modal="true"
             aria-labelledby="delete-note-title"
           >
-            <h2 id="delete-note-title" className="text-base font-semibold text-slate-950">
-              Delete this note?
+            <h2 id="delete-note-title" className="ds-text text-base font-semibold">
+              {t('editor.deleteTitle')}
             </h2>
-            <p className="mt-2 text-sm text-slate-600">
-              The note and all of its ToDo items will be deleted. This action cannot be undone.
-            </p>
+            <p className="ds-muted mt-2 text-sm">{t('editor.deleteHint')}</p>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
                 className="secondary-button"
                 onClick={() => setShowDeleteConfirmation(false)}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
-              <button
-                type="button"
-                className="primary-button bg-red-600 hover:bg-red-700"
-                onClick={confirmNoteDeletion}
-              >
-                Delete
+              <button type="button" className="danger-button" onClick={confirmNoteDeletion}>
+                {t('common.delete')}
               </button>
             </div>
           </div>
@@ -1078,14 +1211,12 @@ function NoteDetail({ noteId }: { noteId: string }) {
 
 function PinnedNewNoteWindow() {
   const createNote = useAppStore((state) => state.createNote);
-  const createNoteWithEntry = useAppStore((state) => state.createNoteWithEntry);
   const updateNoteTitle = useAppStore((state) => state.updateNoteTitle);
-  const addEntry = useAppStore((state) => state.addEntry);
+  const updateNoteContent = useAppStore((state) => state.updateNoteContent);
   const storeHydrated = useStoreHydrated();
   const [titleDraft, setTitleDraft] = React.useState('');
   const [draft, setDraft] = React.useState('');
   const [savedNoteId, setSavedNoteId] = React.useState<string | null>(null);
-  const [savedEntryId, setSavedEntryId] = React.useState<string | null>(null);
   const [isEditing, setIsEditing] = React.useState(false);
   // Save status messages are currently not surfaced in this view, but the
   // setter is kept because the save flow still records status transitions.
@@ -1129,29 +1260,12 @@ function PinnedNewNoteWindow() {
       setStatus('Saving...');
 
       if (!savedNoteId) {
-        if (content) {
-          createNoteWithEntry(nextDraft, title);
-        } else {
-          createNote(title);
-        }
-
+        createNote(title, nextDraft);
         const state = useAppStore.getState();
-        const nextNoteId = state.selectedNoteId ?? state.notes[0]?.id ?? null;
-        const nextEntryId = nextNoteId
-          ? (state.entries.find((entry) => entry.noteId === nextNoteId)?.id ?? null)
-          : null;
-        setSavedNoteId(nextNoteId);
-        setSavedEntryId(nextEntryId);
+        setSavedNoteId(state.selectedNoteId ?? state.notes[0]?.id ?? null);
       } else {
         updateNoteTitle(savedNoteId, title || 'Untitled Note');
-        if (savedEntryId) {
-          useAppStore.getState().updateEntry(savedEntryId, nextDraft);
-        } else if (content) {
-          addEntry(savedNoteId, nextDraft);
-          const nextEntryId =
-            useAppStore.getState().entries.find((entry) => entry.noteId === savedNoteId)?.id ?? null;
-          setSavedEntryId(nextEntryId);
-        }
+        updateNoteContent(savedNoteId, nextDraft);
       }
 
       lastSavedRef.current = { title, content: nextDraft };
@@ -1161,12 +1275,14 @@ function PinnedNewNoteWindow() {
       }
       await notifyAppStateChanged();
     },
-    [addEntry, createNote, createNoteWithEntry, savedEntryId, savedNoteId, updateNoteTitle],
+    [createNote, savedNoteId, updateNoteContent, updateNoteTitle],
   );
 
   const saveDraft = React.useCallback(
     (mode: 'auto' | 'manual' = 'manual') => {
-      return saveDraftContent(draft, titleDraft, mode);
+      // Read the live document so a manual save does not drop the final keystrokes.
+      const nextDraft = editorViewRef.current?.state.doc.toString() ?? draft;
+      return saveDraftContent(nextDraft, titleFromFirstLine(nextDraft), mode);
     },
     [draft, saveDraftContent, titleDraft],
   );
@@ -1218,7 +1334,7 @@ function PinnedNewNoteWindow() {
 
   const togglePreviewTodo = React.useCallback(
     (occurrenceIndex: number, done: boolean) => {
-      const nextDraft = updateTodoStatusInEntryContent(draft, occurrenceIndex, done ? 'done' : 'todo');
+      const nextDraft = updateTodoStatusInContent(draft, occurrenceIndex, done ? 'done' : 'todo');
       updateDraft(nextDraft);
       void saveDraftContent(nextDraft, titleFromFirstLine(nextDraft), 'auto');
     },
@@ -1288,35 +1404,28 @@ function PinnedNewNoteWindow() {
 
   const startEditing = React.useCallback(async () => {
     if (savedNoteId) {
+      const applyNote = (nextTitle: string, nextContent: string) => {
+        setTitleDraft(nextTitle);
+        setDraft(nextContent);
+        lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+      };
+
       try {
-        const content = await readNoteBundle(savedNoteId);
-        if (content) {
-          const nextBundle = JSON.parse(content) as NoteBundleData;
-          const firstEntry = nextBundle.entries[0];
-          const nextTitle = displayTitle(nextBundle.note.title);
-          const nextContent = firstEntry?.content ?? '';
-          setTitleDraft(nextTitle);
-          setDraft(nextContent);
-          setSavedEntryId(firstEntry?.id ?? null);
-          lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+        const raw = await readNoteBundle(savedNoteId);
+        if (raw) {
+          const nextBundle = JSON.parse(raw) as NoteBundleData;
+          applyNote(displayTitle(nextBundle.note.title), nextBundle.note.content ?? '');
         }
       } catch {
-        const state = useAppStore.getState();
-        const nextNote = state.notes.find((item) => item.id === savedNoteId);
-        const firstEntry = state.entries.find((entry) => entry.noteId === savedNoteId);
+        const nextNote = useAppStore.getState().notes.find((item) => item.id === savedNoteId);
         if (nextNote) {
-          const nextTitle = displayTitle(nextNote.title);
-          const nextContent = firstEntry?.content ?? draft;
-          setTitleDraft(nextTitle);
-          setDraft(nextContent);
-          setSavedEntryId(firstEntry?.id ?? null);
-          lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+          applyNote(displayTitle(nextNote.title), nextNote.content);
         }
       }
     }
 
     setIsEditing(true);
-  }, [draft, savedNoteId]);
+  }, [savedNoteId]);
 
   React.useEffect(() => {
     if (!isEditing) {
@@ -1361,7 +1470,7 @@ function PinnedNewNoteWindow() {
             />
           </div>
         ) : (
-          <PinnedNotePreview
+          <NoteBodyPreview
             content={draft}
             emptyMessage="双击开始记录"
             onDoubleClick={() => void startEditing()}
@@ -1376,15 +1485,13 @@ function PinnedNewNoteWindow() {
 
 function PinnedNoteWindow({ noteId }: { noteId: string }) {
   const note = useAppStore((state) => state.notes.find((item) => item.id === noteId));
-  const allEntries = useAppStore((state) => state.entries);
   const updateNoteTitle = useAppStore((state) => state.updateNoteTitle);
-  const addEntry = useAppStore((state) => state.addEntry);
+  const updateNoteContent = useAppStore((state) => state.updateNoteContent);
   const storeHydrated = useStoreHydrated();
   const [bundle, setBundle] = React.useState<NoteBundleData | null>(null);
   const [loadFailed, setLoadFailed] = React.useState(false);
   const [isEditing, setIsEditing] = React.useState(false);
   const [draftTitle, setDraftTitle] = React.useState('');
-  const [draftEntryId, setDraftEntryId] = React.useState<string | null>(null);
   const [draftContent, setDraftContent] = React.useState('');
   // Save status messages are currently not surfaced in this view, but the
   // setter is kept because the save flow still records status transitions.
@@ -1394,14 +1501,14 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
   const isInsertingImageRef = React.useRef(false);
   const initializedRef = React.useRef(false);
   const lastSavedRef = React.useRef({ title: '', content: '' });
-  const entries = React.useMemo(() => {
-    if (bundle) {
-      return bundle.entries;
-    }
-
-    return allEntries.filter((entry) => entry.noteId === noteId);
-  }, [allEntries, bundle, noteId]);
+  const draftContentRef = React.useRef('');
+  const isEditingRef = React.useRef(false);
   const title = bundle?.note.title ?? note?.title ?? 'Pinned Note';
+
+  React.useEffect(() => {
+    draftContentRef.current = draftContent;
+    isEditingRef.current = isEditing;
+  }, [draftContent, isEditing]);
 
   React.useEffect(() => {
     document.body.classList.add('pinned-note-body');
@@ -1410,17 +1517,40 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
     };
   }, []);
 
+  const applyNoteContent = React.useCallback((rawTitle: string, rawContent: string) => {
+    const nextTitle = displayTitle(rawTitle);
+    setBundle(null);
+    setDraftTitle(nextTitle);
+    setDraftContent(rawContent);
+    lastSavedRef.current = { title: nextTitle.trim(), content: rawContent };
+    initializedRef.current = true;
+    setLoadFailed(false);
+  }, []);
+
   const refreshLatestNote = React.useCallback(async () => {
+    // Never rewind an in-progress draft: focus events fire while the user is
+    // editing or before the debounced write has landed, and clobbering
+    // `lastSavedRef` here would make the dedupe guard swallow every later save.
+    if (isEditingRef.current || draftContentRef.current !== lastSavedRef.current.content) {
+      return;
+    }
+
+    // The hydrated store is at least as fresh as disk (writes are debounced and
+    // every writer goes through it), so prefer it when its note is newer.
+    const stored = useAppStore.getState().notes.find((item) => item.id === noteId);
+
     try {
-      const content = await readNoteBundle(noteId);
-      if (content) {
-        const nextBundle = JSON.parse(content) as NoteBundleData;
-        const firstEntry = nextBundle.entries[0];
+      const raw = await readNoteBundle(noteId);
+      if (raw) {
+        const nextBundle = JSON.parse(raw) as NoteBundleData;
+        if (stored && stored.updatedAt > nextBundle.note.updatedAt) {
+          applyNoteContent(stored.title, stored.content ?? '');
+          return;
+        }
         const nextTitle = displayTitle(nextBundle.note.title);
-        const nextContent = firstEntry?.content ?? '';
+        const nextContent = nextBundle.note.content ?? '';
         setBundle(nextBundle);
         setDraftTitle(nextTitle);
-        setDraftEntryId(firstEntry?.id ?? null);
         setDraftContent(nextContent);
         lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
         initializedRef.current = true;
@@ -1431,24 +1561,13 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
       // Fall back to the hydrated store state below.
     }
 
-    const state = useAppStore.getState();
-    const nextNote = state.notes.find((item) => item.id === noteId);
-    if (!nextNote) {
-      setLoadFailed(true);
+    if (stored) {
+      applyNoteContent(stored.title, stored.content ?? '');
       return;
     }
 
-    const firstEntry = state.entries.find((entry) => entry.noteId === noteId);
-    const nextTitle = displayTitle(nextNote.title);
-    const nextContent = firstEntry?.content ?? '';
-    setBundle(null);
-    setDraftTitle(nextTitle);
-    setDraftEntryId(firstEntry?.id ?? null);
-    setDraftContent(nextContent);
-    lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
-    initializedRef.current = true;
-    setLoadFailed(false);
-  }, [noteId]);
+    setLoadFailed(true);
+  }, [applyNoteContent, noteId]);
 
   React.useEffect(() => {
     void refreshLatestNote();
@@ -1465,21 +1584,18 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
       return;
     }
 
-    const firstEntry = entries[0];
     const nextTitle = displayTitle(title);
-    const nextContent = firstEntry?.content ?? '';
+    const nextContent = bundle?.note.content ?? note?.content ?? '';
     setDraftTitle(nextTitle);
-    setDraftEntryId(firstEntry?.id ?? null);
     setDraftContent(nextContent);
     lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
     initializedRef.current = true;
-  }, [bundle, entries, loadFailed, note, title]);
+  }, [bundle, loadFailed, note, title]);
 
   const saveDraftContent = React.useCallback(
     async (nextDraftContent: string, nextDraftTitle = draftTitle, mode: 'auto' | 'manual' = 'manual') => {
       await waitForStoreHydration();
       const nextTitle = nextDraftTitle.trim();
-      const nextContent = nextDraftContent.trim();
       if (!note && !bundle) {
         return;
       }
@@ -1490,15 +1606,7 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
 
       setStatus('Saving...');
       updateNoteTitle(noteId, nextTitle || 'Untitled Note');
-      if (draftEntryId) {
-        useAppStore.getState().updateEntry(draftEntryId, nextDraftContent);
-      } else if (nextContent) {
-        addEntry(noteId, nextDraftContent);
-        const nextEntryId =
-          useAppStore.getState().entries.find((entry) => entry.noteId === noteId)?.id ?? null;
-        setDraftEntryId(nextEntryId);
-      }
-
+      updateNoteContent(noteId, nextDraftContent);
       setBundle(null);
       lastSavedRef.current = { title: nextTitle, content: nextDraftContent };
       setStatus(mode === 'auto' ? 'Saved automatically' : 'Saved');
@@ -1507,12 +1615,14 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
       }
       await notifyAppStateChanged();
     },
-    [addEntry, bundle, draftEntryId, draftTitle, note, noteId, updateNoteTitle],
+    [bundle, draftTitle, note, noteId, updateNoteContent, updateNoteTitle],
   );
 
   const saveDraft = React.useCallback(
     (mode: 'auto' | 'manual' = 'manual') => {
-      return saveDraftContent(draftContent, draftTitle, mode);
+      // Read the live document so a manual save does not drop the final keystrokes.
+      const nextDraftContent = editorViewRef.current?.state.doc.toString() ?? draftContent;
+      return saveDraftContent(nextDraftContent, draftTitle, mode);
     },
     [draftContent, draftTitle, saveDraftContent],
   );
@@ -1523,7 +1633,8 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
     }
 
     const title = draftTitle.trim();
-    if (lastSavedRef.current.title === title && lastSavedRef.current.content === draftContent) {
+    const liveDraft = editorViewRef.current?.state.doc.toString() ?? draftContent;
+    if (lastSavedRef.current.title === title && lastSavedRef.current.content === liveDraft) {
       return;
     }
 
@@ -1559,7 +1670,7 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
 
   const togglePreviewTodo = React.useCallback(
     (occurrenceIndex: number, done: boolean) => {
-      const nextDraftContent = updateTodoStatusInEntryContent(
+      const nextDraftContent = updateTodoStatusInContent(
         draftContent,
         occurrenceIndex,
         done ? 'done' : 'todo',
@@ -1632,43 +1743,34 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
   }, [insertPinnedImage]);
 
   const startEditing = React.useCallback(async () => {
+    const apply = (nextTitle: string, nextContent: string) => {
+      setDraftTitle(nextTitle);
+      setDraftContent(nextContent);
+      lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
+      setLoadFailed(false);
+      setIsEditing(true);
+    };
+
     try {
-      const content = await readNoteBundle(noteId);
-      if (content) {
-        const nextBundle = JSON.parse(content) as NoteBundleData;
-        const firstEntry = nextBundle.entries[0];
-        const nextTitle = displayTitle(nextBundle.note.title);
-        const nextContent = firstEntry?.content ?? '';
+      const raw = await readNoteBundle(noteId);
+      if (raw) {
+        const nextBundle = JSON.parse(raw) as NoteBundleData;
         setBundle(nextBundle);
-        setDraftTitle(nextTitle);
-        setDraftEntryId(firstEntry?.id ?? null);
-        setDraftContent(nextContent);
-        lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
-        setLoadFailed(false);
-        setIsEditing(true);
+        apply(displayTitle(nextBundle.note.title), nextBundle.note.content ?? '');
         return;
       }
     } catch {
       // Fall back to hydrated store state below.
     }
 
-    const state = useAppStore.getState();
-    const nextNote = state.notes.find((item) => item.id === noteId);
+    const nextNote = useAppStore.getState().notes.find((item) => item.id === noteId);
     if (!nextNote) {
       setLoadFailed(true);
       return;
     }
 
-    const firstEntry = state.entries.find((entry) => entry.noteId === noteId);
-    const nextTitle = displayTitle(nextNote.title);
-    const nextContent = firstEntry?.content ?? '';
     setBundle(null);
-    setDraftTitle(nextTitle);
-    setDraftEntryId(firstEntry?.id ?? null);
-    setDraftContent(nextContent);
-    lastSavedRef.current = { title: nextTitle.trim(), content: nextContent };
-    setLoadFailed(false);
-    setIsEditing(true);
+    apply(displayTitle(nextNote.title), nextNote.content);
   }, [noteId]);
 
   React.useEffect(() => {
@@ -1690,7 +1792,7 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
         {loadFailed ? (
           <div className="text-sm italic text-emerald-950">This pinned note is unavailable.</div>
         ) : !isEditing ? (
-          <PinnedNotePreview
+          <NoteBodyPreview
             content={draftContent}
             emptyMessage="双击编辑内容"
             onDoubleClick={() => void startEditing()}
@@ -1729,46 +1831,6 @@ function PinnedNoteWindow({ noteId }: { noteId: string }) {
   );
 }
 
-function PinnedNotePreview({
-  content,
-  emptyMessage,
-  onDoubleClick,
-  onTodoToggle,
-}: {
-  content: string;
-  emptyMessage: string;
-  onDoubleClick: () => void;
-  onTodoToggle?: (occurrenceIndex: number, done: boolean) => void;
-}) {
-  const handleTodoChange = React.useCallback(
-    (event: React.ChangeEvent<HTMLDivElement>) => {
-      const target = event.target;
-      if (!onTodoToggle || !(target instanceof HTMLInputElement) || target.type !== 'checkbox') {
-        return;
-      }
-
-      const checkboxes = Array.from(
-        event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-      );
-      const occurrenceIndex = checkboxes.indexOf(target);
-      if (occurrenceIndex >= 0) {
-        onTodoToggle(occurrenceIndex, target.checked);
-      }
-    },
-    [onTodoToggle],
-  );
-
-  return (
-    <div className="pinned-note-preview min-h-full" onChange={handleTodoChange} onDoubleClick={onDoubleClick}>
-      {content.trim() ? (
-        <MarkdownContent content={content} enableTaskCheckboxes={Boolean(onTodoToggle)} />
-      ) : (
-        <div className="pinned-note-empty">{emptyMessage}</div>
-      )}
-    </div>
-  );
-}
-
 function PinnedSaveToast({ visible }: { visible: boolean }) {
   return (
     <div className={`pinned-save-toast ${visible ? 'pinned-save-toast-visible' : ''}`} aria-live="polite">
@@ -1780,6 +1842,7 @@ function PinnedSaveToast({ visible }: { visible: boolean }) {
 function WorkspaceToolbar({
   mode,
   showEditButton = true,
+  onFind,
   onExport,
   onPin,
   onInsertImage,
@@ -1793,6 +1856,7 @@ function WorkspaceToolbar({
 }: {
   mode: 'preview' | 'edit';
   showEditButton?: boolean;
+  onFind?: () => void;
   onExport?: () => void;
   onPin?: () => void;
   onInsertImage?: () => void;
@@ -1805,6 +1869,7 @@ function WorkspaceToolbar({
   saveLabel: string;
 }) {
   const shortcuts = useAppStore((state) => state.shortcuts);
+  const { t } = useI18n();
   const shortcutConfig = {
     ...defaultShortcuts,
     ...shortcuts,
@@ -1826,39 +1891,58 @@ function WorkspaceToolbar({
               <button
                 type="button"
                 className="icon-button tooltip-button"
-                data-tooltip="Export"
+                data-tooltip={t('editor.export')}
                 onClick={onExport}
-                aria-label="Export note"
+                aria-label={t('editor.export')}
               >
-                <Download className="h-4 w-4" />
+                <span className="icon-glyph" aria-hidden="true">
+                  <Icon name="download" size={15} />
+                </span>
               </button>
             ) : null}
             {onPin ? (
               <button
                 type="button"
                 className="icon-button tooltip-button"
-                data-tooltip="Pin"
+                data-tooltip={t('editor.pin')}
                 onClick={onPin}
-                aria-label="Pin note"
+                aria-label={t('editor.pin')}
               >
-                <Pin className="h-4 w-4" />
+                <span className="icon-glyph" aria-hidden="true">
+                  <Icon name="pin" size={15} />
+                </span>
               </button>
             ) : null}
             {mode === 'edit' && onInsertImage ? (
               <button
                 type="button"
                 className="icon-button tooltip-button"
-                data-tooltip="Image"
+                data-tooltip={t('editor.image')}
                 onClick={onInsertImage}
-                aria-label="Insert image"
+                aria-label={t('editor.image')}
               >
-                <ImageIcon className="h-4 w-4" />
+                <span className="icon-glyph" aria-hidden="true">
+                  <Icon name="image" size={15} />
+                </span>
               </button>
             ) : null}
           </div>
         ) : null}
         {mode === 'edit' || showEditButton ? (
           <div className="toolbar-group">
+            {onFind && mode === 'preview' ? (
+              <button
+                type="button"
+                className="icon-button tooltip-button"
+                data-tooltip={t('find.searchInNote')}
+                onClick={onFind}
+                aria-label={t('find.searchInNote')}
+              >
+                <span className="icon-glyph" aria-hidden="true">
+                  <Icon name="search" size={15} />
+                </span>
+              </button>
+            ) : null}
             {mode === 'edit' ? (
               <button
                 type="button"
@@ -1868,28 +1952,34 @@ function WorkspaceToolbar({
                 aria-label={saveLabel}
                 disabled={saveDisabled}
               >
-                <Save className="h-4 w-4" />
+                <span className="icon-glyph" aria-hidden="true">
+                  <Icon name="check" size={15} />
+                </span>
               </button>
             ) : (
               <button
                 type="button"
                 className="icon-button icon-button-primary tooltip-button"
-                data-tooltip={tooltip('Edit', 'edit')}
+                data-tooltip={tooltip(t('editor.edit'), 'edit')}
                 onClick={onEdit}
-                aria-label="Edit note"
+                aria-label={t('editor.edit')}
               >
-                <FilePenLine className="h-4 w-4" />
+                <span className="icon-glyph" aria-hidden="true">
+                  <Icon name="edit" size={15} />
+                </span>
               </button>
             )}
             {mode === 'edit' && onCancel ? (
               <button
                 type="button"
                 className="icon-button tooltip-button"
-                data-tooltip={tooltip('Cancel', 'cancel')}
+                data-tooltip={tooltip(t('editor.cancel'), 'cancel')}
                 onClick={onCancel}
-                aria-label="Cancel editing"
+                aria-label={t('editor.cancel')}
               >
-                <X className="h-4 w-4" />
+                <span className="icon-glyph" aria-hidden="true">
+                  ×
+                </span>
               </button>
             ) : null}
           </div>
@@ -1899,11 +1989,13 @@ function WorkspaceToolbar({
             <button
               type="button"
               className="icon-button icon-button-danger tooltip-button tooltip-align-end"
-              data-tooltip={tooltip('Delete', 'delete')}
+              data-tooltip={tooltip(t('editor.delete'), 'delete')}
               onClick={onDelete}
-              aria-label="Delete note"
+              aria-label={t('editor.delete')}
             >
-              <Trash2 className="h-4 w-4" />
+              <span className="icon-glyph" aria-hidden="true">
+                <Icon name="trash" size={15} />
+              </span>
             </button>
           </div>
         ) : null}
@@ -1915,18 +2007,25 @@ function WorkspaceToolbar({
 function DocumentHeader({
   titleInput,
   subtitle,
+  meta,
   toolbar,
 }: {
   titleInput: React.ReactNode;
   subtitle?: string;
+  meta?: React.ReactNode;
   toolbar: React.ReactNode;
 }) {
   return (
-    <header className="document-header border-b px-6 py-4">
-      <div className="flex items-start gap-4">
+    <header className="document-header shrink-0 border-b px-7 py-4">
+      <div className="ds-view ds-view-head">
         <div className="min-w-0 flex-1">
           {titleInput}
-          {subtitle ? <p className="mt-1 text-xs text-slate-500">{subtitle}</p> : null}
+          {meta || subtitle ? (
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+              {meta}
+              {subtitle ? <span className="ds-pill">{subtitle}</span> : null}
+            </div>
+          ) : null}
         </div>
         <div className="document-header-toolbar pt-0.5">{toolbar}</div>
       </div>
@@ -1952,6 +2051,7 @@ function useTheme(theme: ThemeMode) {
 }
 
 const appStateChangedEvent = 'otter:app-state-changed';
+const storageChangedEvent = 'otter:storage-changed';
 
 function useAppStateChangeSync() {
   React.useEffect(() => {
@@ -1960,7 +2060,7 @@ function useAppStateChangeSync() {
     }
 
     let disposed = false;
-    let cleanup: (() => void) | undefined;
+    const cleanups: Array<() => void> = [];
 
     void listen(appStateChangedEvent, () => {
       if (!disposed) {
@@ -1972,12 +2072,32 @@ function useAppStateChangeSync() {
         return;
       }
 
-      cleanup = unlisten;
+      cleanups.push(unlisten);
+    });
+
+    // The storage root moved (this or another window switched folders): drop
+    // any queued snapshot of the old root, then pull the new one in.
+    void listen(storageChangedEvent, () => {
+      if (disposed) {
+        return;
+      }
+
+      invalidatePersistedAppState();
+      void useAppStore.persist.rehydrate?.();
+    }).then((unlisten) => {
+      if (disposed) {
+        void unlisten();
+        return;
+      }
+
+      cleanups.push(unlisten);
     });
 
     return () => {
       disposed = true;
-      cleanup?.();
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
     };
   }, []);
 }
@@ -2024,13 +2144,7 @@ async function notifyAppStateChanged() {
   await emit(appStateChangedEvent);
 }
 
-function useOpenLatestNoteOnStartup(
-  notes: Array<{ id: string; updatedAt: string }>,
-  recentNoteIds: string[],
-  setActiveSection: (section: NavSection) => void,
-  selectNote: (noteId: string) => void,
-  clearSelectedNote: () => void,
-) {
+function useOpenLatestNoteOnStartup(setActiveSection: (section: NavSection) => void) {
   const [hydrated, setHydrated] = React.useState(() => useAppStore.persist.hasHydrated?.() ?? false);
   const appliedRef = React.useRef(false);
 
@@ -2054,23 +2168,8 @@ function useOpenLatestNoteOnStartup(
     }
 
     appliedRef.current = true;
-
-    if (notes.length === 0) {
-      clearSelectedNote();
-      setActiveSection('new');
-      return;
-    }
-
-    const noteById = new Map(notes.map((note) => [note.id, note] as const));
-    const recent = recentNoteIds.map((id) => noteById.get(id)).find(Boolean);
-    const latest = [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-    const target = recent ?? latest;
-
-    if (target) {
-      selectNote(target.id);
-      setActiveSection('notes');
-    }
-  }, [clearSelectedNote, hydrated, notes, recentNoteIds, selectNote, setActiveSection]);
+    setActiveSection('plan');
+  }, [hydrated, setActiveSection]);
 }
 
 type MarkdownImage = {
@@ -2085,21 +2184,14 @@ type NoteBundleData = {
   note: {
     id: string;
     title: string;
+    content?: string;
     createdAt: string;
     updatedAt: string;
     archivedAt?: string;
   };
-  entries: Array<{
-    id: string;
-    noteId: string;
-    content: string;
-    createdAt: string;
-    updatedAt: string;
-  }>;
   todos: Array<{
     id: string;
     noteId?: string;
-    entryId?: string;
     title: string;
     status: string;
     source: string;
@@ -2176,32 +2268,6 @@ async function createMarkdownImageFromPayload(payload: ClipboardImagePayload): P
   }
 
   return stored;
-}
-
-function mergeDraftEntries(
-  entries: Array<{ id: string; content: string }>,
-  draftEntryId: string | null,
-  draftContent: string,
-) {
-  if (!draftContent.trim()) {
-    return entries.map((entry) => entry.content);
-  }
-
-  if (draftEntryId) {
-    return entries.map((entry) => (entry.id === draftEntryId ? draftContent : entry.content));
-  }
-
-  return entries.length === 0 ? [draftContent] : [draftContent, ...entries.map((entry) => entry.content)];
-}
-
-function downloadTextFile(content: string, fileName: string, mimeType: string) {
-  const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }
 
 function insertMarkdownAtCursor(
@@ -2390,216 +2456,9 @@ function loadImage(source: string) {
   });
 }
 
-function EntryCard({ entryId }: { entryId: string }) {
-  const entry = useAppStore((state) => state.entries.find((item) => item.id === entryId));
-  const allTodos = useAppStore((state) => state.todos);
-  const toggleTodo = useAppStore((state) => state.toggleTodo);
-  const todos = React.useMemo(() => allTodos.filter((todo) => todo.entryId === entryId), [allTodos, entryId]);
-
-  if (!entry) return null;
-
-  return (
-    <article className="entry-card">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          {entry.content.trim() ? (
-            <div className="note-detail-content">
-              <MarkdownContent content={entry.content} />
-            </div>
-          ) : (
-            <div className="document-empty-hint">No note text. This entry contains only ToDo items.</div>
-          )}
-        </div>
-      </div>
-      {todos.length > 0 ? (
-        <div className="note-todo-card mt-4 rounded-lg border p-3">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
-            <CheckSquare className="h-3.5 w-3.5" />
-            <span>ToDo List</span>
-            <span className="note-todo-count ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
-              {todos.length}
-            </span>
-          </div>
-          <div className="my-2 border-t border-slate-300" />
-          <div className="space-y-2">
-            {todos.map((todo) => (
-              <label
-                key={todo.id}
-                className="flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-50"
-              >
-                <input
-                  type="checkbox"
-                  checked={todo.status === 'done'}
-                  onChange={(event) => toggleTodo(todo.id, event.target.checked)}
-                  className="mt-1"
-                />
-                <span className={todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-700'}>
-                  {todo.title}
-                </span>
-              </label>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </article>
-  );
-}
-
-function TodosPage() {
-  const todos = useFilteredTodos();
-  const toggleTodo = useAppStore((state) => state.toggleTodo);
-  const deleteTodo = useAppStore((state) => state.deleteTodo);
-  const notes = useAppStore((state) => state.notes);
-  const selectNote = useAppStore((state) => state.selectNote);
-  const [expandedCompletedGroups, setExpandedCompletedGroups] = React.useState<Record<string, boolean>>({});
-
-  const todoGroups = React.useMemo(() => {
-    const notesById = new Map(notes.map((note) => [note.id, note]));
-    const groups = new Map<string, { key: string; noteId?: string; title: string; todos: typeof todos }>();
-
-    todos.forEach((todo) => {
-      const key = todo.noteId ?? 'standalone';
-      const existingGroup = groups.get(key);
-
-      if (existingGroup) {
-        existingGroup.todos.push(todo);
-        return;
-      }
-
-      const note = todo.noteId ? notesById.get(todo.noteId) : undefined;
-      groups.set(key, {
-        key,
-        noteId: todo.noteId,
-        title: note ? displayTitle(note.title) : todo.noteId ? 'Deleted note' : 'Standalone tasks',
-        todos: [todo],
-      });
-    });
-
-    return [...groups.values()];
-  }, [notes, todos]);
-
-  const openTodoSource = React.useCallback(
-    (todo: { noteId?: string }) => {
-      if (!todo.noteId) {
-        return;
-      }
-
-      selectNote(todo.noteId);
-    },
-    [selectNote],
-  );
-
-  const removeTodo = React.useCallback(
-    async (todoId: string) => {
-      if (await confirmDeletion('Delete this ToDo item?')) {
-        deleteTodo(todoId);
-      }
-    },
-    [deleteTodo],
-  );
-
-  const toggleCompletedGroup = React.useCallback((groupKey: string) => {
-    setExpandedCompletedGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
-  }, []);
-
-  return (
-    <Page title="ToDos" subtitle="Tasks extracted from notes">
-      <div className="mx-auto w-full max-w-3xl space-y-2">
-        {todos.length === 0 ? (
-          <EmptyMessage title="No ToDo items" message="Add - [ ] inside a note entry." icon={CheckSquare} />
-        ) : (
-          todoGroups.map((group) => {
-            const activeTodos = group.todos.filter((todo) => todo.status !== 'done');
-            const completedTodos = group.todos.filter((todo) => todo.status === 'done');
-            const completedCount = completedTodos.length;
-            const showCompleted =
-              completedCount > 0 && (activeTodos.length === 0 || expandedCompletedGroups[group.key]);
-            const visibleTodos = showCompleted ? [...activeTodos, ...completedTodos] : activeTodos;
-            return (
-              <section key={group.key} className="todo-source-card content-card overflow-hidden rounded-xl">
-                <button
-                  type="button"
-                  className="todo-source-card-header flex w-full items-center gap-3 px-4 py-3 text-left"
-                  onClick={() => openTodoSource(group)}
-                  disabled={!group.noteId}
-                >
-                  <span className="todo-source-card-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
-                    <NotebookText className="h-4 w-4" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5">
-                      <span className="truncate text-sm font-semibold text-slate-900">{group.title}</span>
-                      {group.noteId ? (
-                        <ChevronRight className="todo-source-card-arrow h-3.5 w-3.5 shrink-0" />
-                      ) : null}
-                    </span>
-                    <span className="mt-0.5 block text-xs text-slate-500">
-                      {group.noteId ? 'Source note' : 'Personal task'} · {completedCount}/{group.todos.length}{' '}
-                      completed
-                    </span>
-                  </span>
-                  <span className="note-todo-count rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
-                    {group.todos.length}
-                  </span>
-                </button>
-                <div
-                  className="todo-source-card-items space-y-1 p-2"
-                  aria-label={`${completedCount} of ${group.todos.length} tasks completed`}
-                >
-                  {visibleTodos.map((todo) => (
-                    <div
-                      key={todo.id}
-                      className="todo-source-card-item flex items-start gap-3 rounded-md px-2 py-2"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={todo.status === 'done'}
-                        onChange={(event) => toggleTodo(todo.id, event.target.checked)}
-                        className="mt-0.5 shrink-0"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div
-                          className={`text-sm font-medium ${todo.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-900'}`}
-                        >
-                          {todo.title}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="todo-delete-button rounded-md p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                        aria-label={`Delete ${todo.title}`}
-                        onClick={() => removeTodo(todo.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                {completedTodos.length > 0 && activeTodos.length > 0 ? (
-                  <button
-                    type="button"
-                    className="todo-completed-toggle flex w-full items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-medium"
-                    onClick={() => toggleCompletedGroup(group.key)}
-                  >
-                    <ChevronDown
-                      className={`h-3.5 w-3.5 transition-transform ${showCompleted ? 'rotate-180' : ''}`}
-                    />
-                    {showCompleted
-                      ? 'Hide completed tasks'
-                      : `Show ${completedTodos.length} completed task${completedTodos.length === 1 ? '' : 's'}`}
-                  </button>
-                ) : null}
-              </section>
-            );
-          })
-        )}
-      </div>
-    </Page>
-  );
-}
-
 function ImagesPage() {
-  const entries = useAppStore((state) => state.entries);
+  const { t } = useI18n();
+  const notes = useAppStore((state) => state.notes);
   const [attachments, setAttachments] = React.useState<ImageAttachment[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -2641,13 +2500,13 @@ function ImagesPage() {
 
   const attachmentUsage = React.useMemo(() => {
     const counts = new Map<string, number>();
-    for (const text of entries.map((entry) => entry.content)) {
+    for (const text of notes.map((note) => note.content)) {
       for (const fileName of extractAttachmentReferences(text)) {
         counts.set(fileName, (counts.get(fileName) ?? 0) + 1);
       }
     }
     return counts;
-  }, [entries]);
+  }, [notes]);
 
   const copyReference = React.useCallback(async (fileName: string) => {
     try {
@@ -2664,8 +2523,8 @@ function ImagesPage() {
       const count = attachmentUsage.get(fileName) ?? 0;
       const confirmMessage =
         count > 0
-          ? `Delete ${fileName}? It is still referenced in ${count} place(s).`
-          : `Delete ${fileName}?`;
+          ? t('images.deleteConfirmUsed', { name: fileName, n: count })
+          : t('images.deleteConfirm', { name: fileName });
       if (!(await confirmDeletion(confirmMessage))) {
         return;
       }
@@ -2677,86 +2536,94 @@ function ImagesPage() {
         window.alert(errorMessage(currentError));
       }
     },
-    [attachmentUsage],
+    [attachmentUsage, t],
   );
 
   const closeViewer = React.useCallback(() => setViewerFileName(''), []);
 
   return (
-    <Page title="Images" subtitle="Manage uploaded image attachments">
-      <div className="mx-auto w-full max-w-4xl space-y-3">
-        {!isTauriRuntime() ? (
-          <EmptyMessage
-            title="Images are not stored separately here"
-            message="Browser preview uses inline image data. Open the Tauri desktop app to manage uploaded images."
-            icon={ImageIcon}
-          />
-        ) : loading ? (
-          <EmptyMessage title="Loading images" message="Reading attachment files..." icon={ImageIcon} />
-        ) : error ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
-        ) : attachments.length === 0 ? (
-          <EmptyMessage
-            title="No uploaded images"
-            message="Use the image button or paste an image into a note."
-            icon={ImageIcon}
-          />
-        ) : (
-          <div className="space-y-2">
-            {attachments.map((item) => {
-              const usageCount = attachmentUsage.get(item.fileName) ?? 0;
-              return (
-                <div
-                  key={item.fileName}
-                  className="content-card flex items-center gap-3 rounded-lg px-3 py-2"
+    <Page title={t('nav.images')} subtitle={t('images.subtitle')}>
+      {!isTauriRuntime() ? (
+        <EmptyMessage
+          title={t('images.browserTitle')}
+          message={t('images.browserHint')}
+          icon={<Icon name="image" size={20} />}
+        />
+      ) : loading ? (
+        <EmptyMessage
+          title={t('images.loadingTitle')}
+          message={t('images.loadingHint')}
+          icon={<Icon name="image" size={20} />}
+        />
+      ) : error ? (
+        <div className="ds-card p-4 text-sm text-[color:var(--ds-danger)]">{error}</div>
+      ) : attachments.length === 0 ? (
+        <EmptyMessage
+          title={t('images.emptyTitle')}
+          message={t('images.emptyHint')}
+          icon={<Icon name="image" size={20} />}
+        />
+      ) : (
+        <div className="ds-card ds-note-list">
+          {attachments.map((item) => {
+            const usageCount = attachmentUsage.get(item.fileName) ?? 0;
+            return (
+              <div key={item.fileName} className="ds-att-row">
+                <button
+                  type="button"
+                  className="h-11 w-11 flex-none overflow-hidden rounded-md"
+                  onClick={() => setViewerFileName(item.originalFileName)}
+                  title={t('images.view')}
+                  aria-label={t('images.view')}
                 >
-                  <button
-                    className="flex-none h-11 w-11 overflow-hidden rounded-md"
-                    onClick={() => setViewerFileName(item.originalFileName)}
-                    title="View original image"
-                    aria-label={`View ${item.fileName}`}
-                  >
-                    <AttachmentPreviewImage
-                      fileName={item.fileName}
-                      alt={item.fileName}
-                      className="h-full w-full object-cover"
-                    />
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-slate-900" title={item.fileName}>
-                      {item.fileName}
-                    </div>
-                    <div className="mt-0.5 truncate text-xs text-slate-500">
-                      {formatBytes(item.size)} · {formatAttachmentTime(item.modifiedAt)} ·{' '}
-                      {usageCount > 0
-                        ? `${usageCount} reference${usageCount === 1 ? '' : 's'}`
-                        : 'Not referenced'}
-                    </div>
+                  <AttachmentPreviewImage
+                    fileName={item.fileName}
+                    alt={item.fileName}
+                    className="h-full w-full object-cover"
+                  />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="ds-note-row-title truncate" title={item.fileName}>
+                    {item.fileName}
                   </div>
-                  <div className="flex flex-none items-center gap-1">
-                    <button
-                      className="icon-button h-8 w-8"
-                      onClick={() => copyReference(item.fileName)}
-                      title="Copy markdown reference"
-                      aria-label={`Copy markdown reference for ${item.fileName}`}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                    <button
-                      className="icon-button icon-button-danger h-8 w-8"
-                      onClick={() => removeAttachment(item.fileName)}
-                      title="Delete image"
-                      aria-label={`Delete ${item.fileName}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                  <div className="ds-note-row-preview mt-0.5 truncate">
+                    {formatBytes(item.size)} · {formatAttachmentTime(item.modifiedAt)} ·{' '}
+                    {usageCount > 0
+                      ? usageCount === 1
+                        ? t('images.referencesOne')
+                        : t('images.references', { n: usageCount })
+                      : t('images.notReferenced')}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                <div className="flex flex-none items-center gap-1">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={() => void copyReference(item.fileName)}
+                    title={t('images.copy')}
+                    aria-label={t('images.copy')}
+                  >
+                    <span className="icon-glyph" aria-hidden="true">
+                      <Icon name="copy" size={14} />
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button icon-button-danger"
+                    onClick={() => void removeAttachment(item.fileName)}
+                    title={t('images.delete')}
+                    aria-label={t('images.delete')}
+                  >
+                    <span className="icon-glyph" aria-hidden="true">
+                      <Icon name="trash" size={14} />
+                    </span>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
       {viewerFileName ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-6"
@@ -2764,20 +2631,20 @@ function ImagesPage() {
           role="presentation"
         >
           <div
-            className="flex max-h-[92vh] w-full max-w-6xl flex-col gap-3 rounded-lg bg-slate-900 p-4 shadow-2xl"
+            className="ds-card flex max-h-[92vh] w-full max-w-6xl flex-col gap-3 p-4"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="truncate text-sm font-medium text-slate-100">{viewerFileName}</div>
-                <div className="text-xs text-slate-400">Original image</div>
+                <div className="ds-text truncate text-sm font-medium">{viewerFileName}</div>
+                <div className="ds-muted text-xs">{t('images.original')}</div>
               </div>
-              <button className="secondary-button" onClick={closeViewer}>
-                <X className="h-4 w-4" />
-                Close
+              <button type="button" className="secondary-button" onClick={closeViewer}>
+                <span aria-hidden="true">×</span>
+                {t('images.close')}
               </button>
             </div>
-            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-md bg-slate-950 p-2">
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-md bg-[color:var(--ds-bg)] p-2">
               <AttachmentPreviewImage
                 fileName={viewerFileName}
                 fallbackFileName={viewerFileName}
@@ -2793,8 +2660,11 @@ function ImagesPage() {
 }
 
 function SearchResultsPage({ query }: { query: string }) {
+  const { t } = useI18n();
   const selectNote = useAppStore((state) => state.selectNote);
   const setQuery = useAppStore((state) => state.setQuery);
+  const storeNotes = useAppStore((state) => state.notes);
+  const todos = useAppStore((state) => state.todos);
   const [results, setResults] = React.useState<
     Array<{ noteId: string; title: string; updatedAt: string; preview: string }>
   >([]);
@@ -2831,47 +2701,133 @@ function SearchResultsPage({ query }: { query: string }) {
     };
   }, [normalizedQuery]);
 
+  const tagsByNoteId = React.useMemo(() => {
+    const next = new Map<string, string[]>();
+    for (const note of storeNotes) {
+      next.set(
+        note.id,
+        collectTags([note.content]).map((item) => item.tag),
+      );
+    }
+    return next;
+  }, [storeNotes]);
+  const openTodoByNoteId = React.useMemo(() => {
+    const next = new Map<string, number>();
+    for (const todo of todos) {
+      if (todo.noteId && todo.status !== 'done') {
+        next.set(todo.noteId, (next.get(todo.noteId) ?? 0) + 1);
+      }
+    }
+    return next;
+  }, [todos]);
+  const noteGroups = React.useMemo(() => {
+    const today = todayKey();
+    const yesterday = addDays(today, -1);
+    const weekAgo = addDays(today, -6);
+    const groups = new Map<keyof typeof notesGroupLabel, typeof results>();
+    for (const item of results) {
+      const day = item.updatedAt.slice(0, 10);
+      const key: keyof typeof notesGroupLabel =
+        day >= today ? 'today' : day >= yesterday ? 'yesterday' : day >= weekAgo ? 'week' : 'earlier';
+      const items = groups.get(key);
+      if (items) {
+        items.push(item);
+      } else {
+        groups.set(key, [item]);
+      }
+    }
+    return (Object.keys(notesGroupLabel) as Array<keyof typeof notesGroupLabel>)
+      .map((key) => ({ key, items: groups.get(key) ?? [] }))
+      .filter((group) => group.items.length > 0);
+  }, [results]);
+
   return (
     <Page
-      title="Search"
-      subtitle={normalizedQuery ? `Results for "${query}"` : 'Type to search notes and ToDos'}
+      title={t('search.title')}
+      subtitle={
+        normalizedQuery
+          ? t('search.resultsFor', { q: normalizedQuery, n: results.length })
+          : t('search.subtitle')
+      }
     >
-      <div className="mx-auto w-full max-w-4xl space-y-5">
-        {!normalizedQuery ? (
-          <EmptyMessage
-            title="Search your notes"
-            message="Type in the search box to see matching notes, entries, and ToDos."
-            icon={Search}
-          />
-        ) : results.length === 0 ? (
-          <EmptyMessage
-            title="No matches"
-            message="Try searching by note title, entry content, or ToDo text."
-            icon={Search}
-          />
-        ) : null}
-
-        {results.length > 0 ? (
-          <section>
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</div>
-            <div className="space-y-2">
-              {results.map((item) => (
-                <button
-                  key={item.noteId}
-                  className="content-card content-card-hover w-full rounded-lg p-4 text-left"
-                  onClick={() => {
-                    setQuery('');
-                    selectNote(item.noteId);
-                  }}
-                >
-                  <div className="text-sm font-medium text-slate-900">{displayTitle(item.title)}</div>
-                  <div className="mt-1 text-xs text-slate-500">{item.preview}</div>
-                </button>
-              ))}
-            </div>
-          </section>
-        ) : null}
-      </div>
+      {!normalizedQuery ? (
+        <EmptyMessage
+          title={t('search.emptyTitle')}
+          message={t('search.emptyHint')}
+          icon={<Icon name="search" size={20} />}
+        />
+      ) : results.length === 0 ? (
+        <EmptyMessage
+          title={t('search.noResults')}
+          message={t('search.noResultsHint')}
+          icon={<Icon name="search" size={20} />}
+        />
+      ) : (
+        <div className="ds-note-groups">
+          {noteGroups.map((group) => (
+            <section key={group.key} className="ds-note-group">
+              <div className="ds-note-group-head">
+                <span className="g">{t(notesGroupLabel[group.key])}</span>
+                <span className="line" />
+                <span className="c">{group.items.length}</span>
+              </div>
+              <div className="ds-note-list">
+                {group.items.map((item) => {
+                  const noteTags = tagsByNoteId.get(item.noteId) ?? [];
+                  const openTodos = openTodoByNoteId.get(item.noteId) ?? 0;
+                  return (
+                    <button
+                      key={item.noteId}
+                      type="button"
+                      className="ds-note-card"
+                      onClick={() => {
+                        setQuery('');
+                        selectNote(item.noteId);
+                      }}
+                    >
+                      <span className="ds-note-card-glyph" aria-hidden="true">
+                        <Icon name="note" size={16} />
+                      </span>
+                      <span className="ds-note-card-main">
+                        <span className="ds-note-card-title">
+                          {highlightTextMatches(displayTitle(item.title), normalizedQuery)}
+                        </span>
+                        {item.preview ? (
+                          <span className="ds-note-card-preview">
+                            {highlightTextMatches(item.preview, normalizedQuery)}
+                          </span>
+                        ) : null}
+                        <span className="ds-note-card-meta">
+                          <span className="ds-note-card-date">
+                            {formatDate(item.updatedAt).replace(' ', ' · ')}
+                          </span>
+                          {openTodos > 0 ? (
+                            <span className="ds-note-card-todos" title={t('notes.stat.todos')}>
+                              {openTodos} ☑
+                            </span>
+                          ) : null}
+                        </span>
+                        {noteTags.length > 0 ? (
+                          <span className="ds-note-card-tags">
+                            {noteTags.map((tag) => (
+                              <span key={tag} className="ds-tag">
+                                #{tag}
+                              </span>
+                            ))}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="ds-note-card-arrow" aria-hidden="true">
+                        ›
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
     </Page>
   );
 }
@@ -2881,24 +2837,56 @@ function SettingsPage() {
   const updateShortcut = useAppStore((state) => state.updateShortcut);
   const theme = useAppStore((state) => state.theme);
   const setTheme = useAppStore((state) => state.setTheme);
+  const locale = useAppStore((state) => state.locale);
+  const setLocale = useAppStore((state) => state.setLocale);
+  const { t } = useI18n();
 
   return (
-    <Page title="Settings" subtitle="Application settings">
-      <div className="mx-auto w-full max-w-2xl space-y-4">
+    <Page title={t('nav.settings')} subtitle={t('settings.subtitle')}>
+      <div className="space-y-4">
         <StorageSettings />
         <BackupSettings />
-        <div className="content-card rounded-lg p-5">
+        <div className="ds-card p-5">
           <div className="flex items-center gap-2 font-medium">
-            <Moon className="h-4 w-4" />
-            Theme
+            <span aria-hidden="true" className="flex">
+              <Icon name="globe" size={16} />
+            </span>
+            {t('settings.language')}
           </div>
-          <p className="mt-1 text-sm text-slate-500">Switch between light and dark mode.</p>
-          <div className="theme-choice-group mt-4" role="radiogroup" aria-label="Theme">
+          <p className="ds-muted mt-1 text-sm">{t('settings.languageHint')}</p>
+          <div className="theme-choice-group mt-4" role="radiogroup" aria-label={t('settings.language')}>
+            {locales.map((item) => {
+              const active = locale === item;
+              return (
+                <label key={item} className={`theme-choice ${active ? 'theme-choice-active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="locale"
+                    value={item}
+                    checked={active}
+                    onChange={() => setLocale(item as Locale)}
+                    className="sr-only"
+                  />
+                  <span className="theme-choice-dot" aria-hidden="true" />
+                  {localeLabels[item]}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+        <div className="ds-card p-5">
+          <div className="flex items-center gap-2 font-medium">
+            <span aria-hidden="true">
+              <Icon name="sun" size={16} />
+            </span>
+            {t('settings.theme')}
+          </div>
+          <p className="ds-muted mt-1 text-sm">{t('settings.themeHint')}</p>
+          <div className="theme-choice-group mt-4" role="radiogroup" aria-label={t('settings.theme')}>
             {[
-              { id: 'light', label: 'Light', icon: SunMedium },
-              { id: 'dark', label: 'Dark', icon: Moon },
+              { id: 'light', label: t('settings.light'), icon: 'sun' as const },
+              { id: 'dark', label: t('settings.dark'), icon: 'moon' as const },
             ].map((item) => {
-              const Icon = item.icon;
               const active = theme === item.id;
               return (
                 <label key={item.id} className={`theme-choice ${active ? 'theme-choice-active' : ''}`}>
@@ -2910,7 +2898,9 @@ function SettingsPage() {
                     onChange={() => setTheme(item.id as 'light' | 'dark')}
                     className="sr-only"
                   />
-                  <Icon className="h-4 w-4" />
+                  <span aria-hidden="true" className="flex items-center">
+                    <Icon name={item.icon} size={16} />
+                  </span>
                   <span className="theme-choice-dot" aria-hidden="true" />
                   {item.label}
                 </label>
@@ -2918,13 +2908,15 @@ function SettingsPage() {
             })}
           </div>
         </div>
-        <div className="content-card rounded-lg p-5">
+        <div className="ds-card p-5">
           <div className="flex items-center gap-2 font-medium">
-            <Keyboard className="h-4 w-4" />
-            Keyboard shortcuts
+            <span aria-hidden="true" className="flex">
+              <Icon name="keyboard" size={16} />
+            </span>
+            {t('settings.shortcuts')}
           </div>
           <div className="mt-4 space-y-3">
-            {(['new', 'save', 'edit', 'delete', 'cancel'] as ShortcutAction[]).map((action) => (
+            {(['new', 'capture', 'save', 'edit', 'delete', 'cancel'] as ShortcutAction[]).map((action) => (
               <ShortcutInput
                 key={action}
                 action={action}
@@ -2940,28 +2932,42 @@ function SettingsPage() {
 }
 
 function BackupSettings() {
+  const { t } = useI18n();
   const replaceAppState = useAppStore((state) => state.replaceAppState);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [status, setStatus] = React.useState('');
   const [error, setError] = React.useState('');
 
-  const exportBackup = React.useCallback(() => {
+  const exportBackup = React.useCallback(async () => {
     setStatus('');
     setError('');
+    const fileName = `otternote-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const snapshot = snapshotAppState(useAppStore.getState() as ReturnType<typeof useAppStore.getState>);
+    const content = JSON.stringify(snapshot, null, 2);
+
     try {
-      const snapshot = snapshotAppState(useAppStore.getState() as ReturnType<typeof useAppStore.getState>);
-      const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `otternote-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      setStatus('Backup exported.');
+      if (isTauriRuntime()) {
+        const selected = await saveDialog({
+          title: t('settings.exportDialog'),
+          defaultPath: fileName,
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        });
+
+        if (typeof selected !== 'string' || !selected.trim()) {
+          return;
+        }
+
+        await writeExportFile(selected, content);
+        setStatus(t('settings.backupExported'));
+        return;
+      }
+
+      downloadTextFile(content, fileName, 'application/json');
+      setStatus(t('settings.backupExported'));
     } catch (currentError) {
       setError(errorMessage(currentError));
     }
-  }, []);
+  }, [t]);
 
   const importBackup = React.useCallback(
     async (file: File | null) => {
@@ -2972,11 +2978,11 @@ function BackupSettings() {
         const text = await file.text();
         const parsed = JSON.parse(text) as Partial<AppStateSnapshot>;
         const snapshot = normalizeImportedSnapshot(parsed);
-        if (!window.confirm('Import will replace the current data set. Continue?')) {
+        if (!window.confirm(t('settings.importConfirm'))) {
           return;
         }
         replaceAppState(snapshot);
-        setStatus('Backup imported.');
+        setStatus(t('settings.backupImported'));
       } catch (currentError) {
         setError(errorMessage(currentError));
       } finally {
@@ -2985,24 +2991,30 @@ function BackupSettings() {
         }
       }
     },
-    [replaceAppState],
+    [replaceAppState, t],
   );
 
   return (
-    <div className="content-card rounded-lg p-5">
+    <div className="ds-card p-5">
       <div className="flex items-center gap-2 font-medium">
-        <Upload className="h-4 w-4" />
-        Backup
+        <span aria-hidden="true">
+          <Icon name="download" size={15} />
+        </span>
+        <span className="hidden">{t('settings.backup')}</span>
       </div>
-      <p className="mt-1 text-sm text-slate-500">Export or restore the entire local dataset as JSON.</p>
+      <p className="ds-muted mt-1 text-sm">{t('settings.backupHint')}</p>
       <div className="mt-4 flex flex-wrap gap-2">
         <button className="secondary-button" onClick={exportBackup}>
-          <Download className="h-4 w-4" />
-          Export JSON
+          <span aria-hidden="true">
+            <Icon name="download" size={15} />
+          </span>
+          {t('settings.exportJson')}
         </button>
         <button className="secondary-button" onClick={() => fileInputRef.current?.click()}>
-          <Upload className="h-4 w-4" />
-          Import JSON
+          <span aria-hidden="true">
+            <Icon name="upload" size={15} />
+          </span>
+          {t('settings.importJson')}
         </button>
         <input
           ref={fileInputRef}
@@ -3012,13 +3024,14 @@ function BackupSettings() {
           onChange={(event) => void importBackup(event.target.files?.[0] ?? null)}
         />
       </div>
-      {status ? <div className="mt-3 text-sm text-green-700">{status}</div> : null}
-      {error ? <div className="mt-3 text-sm text-red-600">{error}</div> : null}
+      {status ? <div className="mt-3 text-sm text-[color:var(--ds-accent)]">{status}</div> : null}
+      {error ? <div className="mt-3 text-sm text-[color:var(--ds-danger)]">{error}</div> : null}
     </div>
   );
 }
 
 function StorageSettings() {
+  const { t } = useI18n();
   const [storageInfo, setStorageInfo] = React.useState<StorageInfo | null>(null);
   const [draftPath, setDraftPath] = React.useState('');
   const [status, setStatus] = React.useState('');
@@ -3045,6 +3058,18 @@ function StorageSettings() {
   }, [refreshStorageInfo, tauriRuntime]);
 
   const applyStoragePath = async (storagePath: string, successMessage: string) => {
+    const currentRoot = storageInfo?.path ?? '';
+    const targetRoot = storagePath || storageInfo?.defaultPath || '';
+    if (currentRoot && targetRoot && targetRoot !== currentRoot) {
+      const otherWindows = storageInfo?.otherWindows ?? 0;
+      const message =
+        otherWindows > 0
+          ? t('settings.storageSwitchConfirmMulti', { n: otherWindows })
+          : t('settings.storageSwitchConfirm');
+      if (!window.confirm(message)) {
+        return;
+      }
+    }
     setIsSaving(true);
     setStatus('');
     setError('');
@@ -3052,7 +3077,9 @@ function StorageSettings() {
       const info = await setStoragePath(storagePath);
       setStorageInfo(info);
       setDraftPath(info.customPath ?? info.path);
+      invalidatePersistedAppState();
       window.dispatchEvent(new CustomEvent('otter:storage-changed'));
+      void useAppStore.persist.rehydrate?.();
       setStatus(successMessage);
     } catch (currentError) {
       setError(errorMessage(currentError));
@@ -3062,7 +3089,7 @@ function StorageSettings() {
   };
 
   const resetPath = async () => {
-    await applyStoragePath('', 'Storage folder reset to default.');
+    await applyStoragePath('', t('settings.storageReset'));
   };
 
   const choosePath = async () => {
@@ -3072,14 +3099,14 @@ function StorageSettings() {
     setError('');
     try {
       const selected = await openDialog({
-        title: 'Choose storage folder',
+        title: t('settings.chooseFolder'),
         defaultPath: storageInfo?.path || storageInfo?.defaultPath,
         directory: true,
         multiple: false,
       });
 
       if (typeof selected === 'string' && selected.trim()) {
-        await applyStoragePath(selected, 'Storage folder saved.');
+        await applyStoragePath(selected, t('settings.storageSaved'));
       }
     } catch (currentError) {
       setError(errorMessage(currentError));
@@ -3089,74 +3116,201 @@ function StorageSettings() {
   };
 
   return (
-    <div className="content-card rounded-lg p-5">
+    <div className="ds-card p-5">
       <div className="flex items-center gap-2 font-medium">
-        <Database className="h-4 w-4" />
-        Local storage
+        <span aria-hidden="true" className="flex">
+          <Icon name="folder" size={16} />
+        </span>
+        {t('settings.storage')}
       </div>
       {tauriRuntime ? (
         <div className="mt-4 space-y-3">
           <label className="block">
-            <span className="text-sm font-medium text-slate-700">Storage folder</span>
+            <span className="ds-text text-sm font-medium">{t('settings.storageFolder')}</span>
             <div className="relative mt-2">
               <input
                 value={draftPath}
                 readOnly
                 disabled={isPicking || isSaving}
                 onClick={choosePath}
-                placeholder={storageInfo?.defaultPath ?? 'Default app data folder'}
-                className="h-10 w-full cursor-pointer rounded-md border border-[color:var(--app-border)] bg-[color:var(--app-surface)] px-3 pr-20 font-mono text-sm outline-none focus:ring-2 focus:ring-[color:var(--app-focus-ring)]"
+                placeholder={storageInfo?.defaultPath ?? t('settings.storageDefault')}
+                className="h-10 w-full cursor-pointer rounded-md border border-[color:var(--ds-border)] bg-[color:var(--ds-panel)] px-3 pr-20 font-mono text-sm outline-none focus:ring-2 focus:ring-[color:var(--ds-focus-ring)]"
               />
               <button
                 type="button"
-                aria-label="Choose storage folder"
+                aria-label={t('settings.chooseFolder')}
                 disabled={isPicking || isSaving}
                 onClick={choosePath}
                 className="secondary-button absolute right-10 top-1.5 h-7 w-7 !p-0"
               >
-                <FolderOpen className="h-4 w-4" />
+                <span aria-hidden="true" className="flex">
+                  <Icon name="folder" size={15} />
+                </span>
               </button>
               <button
                 type="button"
-                aria-label="Use default storage folder"
+                aria-label={t('settings.useDefault')}
                 disabled={isPicking || isSaving}
                 onClick={resetPath}
                 className="secondary-button absolute right-1.5 top-1.5 h-7 w-7 !p-0"
               >
-                <RotateCcw className="h-4 w-4" />
+                <span aria-hidden="true" className="flex">
+                  <Icon name="refresh" size={14} />
+                </span>
               </button>
             </div>
           </label>
-          <div className="text-xs text-slate-500">
-            Choose a folder to save it immediately. Current folder:{' '}
-            <span className="font-mono text-slate-700">{storageInfo?.path ?? 'Loading...'}</span>
+          <div className="ds-muted text-xs">
+            {t('settings.storageHint')}{' '}
+            <span className="ds-text font-mono">{storageInfo?.path ?? t('settings.storageLoading')}</span>
           </div>
-          {status ? <div className="text-sm text-green-700">{status}</div> : null}
-          {error ? <div className="text-sm text-red-600">{error}</div> : null}
+          <div className="ds-muted text-xs">{t('settings.storageSharedHint')}</div>
+          {status ? <div className="text-sm text-[color:var(--ds-accent)]">{status}</div> : null}
+          {error ? <div className="text-sm text-[color:var(--ds-danger)]">{error}</div> : null}
         </div>
       ) : (
-        <p className="mt-2 text-sm text-slate-500">
-          Browser preview uses localStorage. Configurable storage folders are available in the Tauri desktop
-          app.
-        </p>
+        <p className="ds-muted mt-2 text-sm">{t('settings.storageBrowser')}</p>
       )}
     </div>
   );
 }
 
 function HelpPage() {
+  const { t } = useI18n();
+  const shortcuts = useAppStore((state) => state.shortcuts);
+
+  const shortcutItems: ShortcutAction[] = ['new', 'capture', 'save', 'edit', 'delete', 'cancel'];
+
   return (
-    <Page title="Help" subtitle="Minimum usage guide">
-      <div className="content-card mx-auto w-full max-w-2xl rounded-lg p-5">
-        <div className="font-medium">Markdown ToDo</div>
-        <pre className="mt-3 rounded-md bg-slate-950 p-4 text-sm text-slate-50">
+    <Page title={t('nav.help')} subtitle={t('help.subtitle')}>
+      <div className="ds-card p-5">
+        <div className="flex items-center gap-2 font-medium">
+          <span aria-hidden="true" className="flex">
+            <Icon name="help" size={16} />
+          </span>
+          {t('help.shortcuts')}
+        </div>
+        <div className="mt-4 space-y-3">
+          {shortcutItems.map((action) => (
+            <div key={action} className="flex items-center justify-between gap-4">
+              <div>
+                <div className="ds-text text-sm font-medium capitalize">{t(shortcutLabelKeys[action])}</div>
+                <div className="ds-muted text-xs">{t(shortcutHelpKeys[action])}</div>
+              </div>
+              <kbd
+                className="rounded-md border border-[color:var(--ds-border)] bg-[color:var(--ds-surface-2)] px-2 py-1 font-mono text-[11.5px] text-[color:var(--ds-text)]"
+                data-shortcut-key
+              >
+                {shortcuts?.[action] ?? defaultShortcuts[action]}
+              </kbd>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="ds-card p-5">
+        <div className="flex items-center gap-2 font-medium">
+          <span aria-hidden="true" className="flex">
+            <Icon name="check" size={16} />
+          </span>
+          {t('help.tips')}
+        </div>
+        <ul className="ds-muted mt-4 space-y-3 text-sm">
+          <li className="flex gap-3">
+            <span
+              className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ds-accent)]"
+              aria-hidden="true"
+            />
+            <span>
+              {t('help.tip.capture')
+                .split('%SC%')
+                .flatMap((part, index) =>
+                  index > 0
+                    ? [
+                        <kbd key={`kbd-${index}`} className="text-[#4ea16b]">
+                          {shortcuts?.capture ?? defaultShortcuts.capture}
+                        </kbd>,
+                        part,
+                      ]
+                    : [part],
+                )}
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span
+              className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ds-accent)]"
+              aria-hidden="true"
+            />
+            <span>{t('help.tip.plan')}</span>
+          </li>
+          <li className="flex gap-3">
+            <span
+              className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ds-accent)]"
+              aria-hidden="true"
+            />
+            <span>{t('help.tip.span')}</span>
+          </li>
+          <li className="flex gap-3">
+            <span
+              className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ds-accent)]"
+              aria-hidden="true"
+            />
+            <span>{t('help.tip.review')}</span>
+          </li>
+        </ul>
+      </div>
+
+      <div className="ds-card p-5">
+        <div className="flex items-center gap-2 font-medium">
+          <span aria-hidden="true" className="flex">
+            <Icon name="calendar" size={16} />
+          </span>
+          {t('help.stats')}
+        </div>
+        <ul className="ds-muted mt-4 space-y-3 text-sm">
+          <li className="flex gap-3">
+            <span
+              className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ds-warn)]"
+              aria-hidden="true"
+            />
+            <span>{t('help.stat.completed')}</span>
+          </li>
+          <li className="flex gap-3">
+            <span
+              className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ds-warn)]"
+              aria-hidden="true"
+            />
+            <span>{t('help.stat.plan')}</span>
+          </li>
+          <li className="flex gap-3">
+            <span
+              className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ds-warn)]"
+              aria-hidden="true"
+            />
+            <span>{t('help.stat.daily')}</span>
+          </li>
+        </ul>
+      </div>
+
+      <div className="ds-card p-5">
+        <div className="flex items-center gap-2 font-medium">
+          <span aria-hidden="true" className="flex">
+            <Icon name="note" size={16} />
+          </span>
+          {t('help.todo')}
+        </div>
+        <p className="ds-muted mt-2 text-sm">{t('help.todoHint')}</p>
+        <pre className="mt-3 overflow-x-auto rounded-md border border-[color:var(--ds-code-border)] bg-[color:var(--ds-code-surface)] p-4 font-mono text-xs text-[color:var(--ds-text)]">
           {'- [ ] incomplete task\n- [x] completed task'}
         </pre>
-        <div className="mt-5 font-medium">Images</div>
-        <p className="mt-2 text-sm text-slate-500">
-          Use the image button in edit mode to insert a local image, or write markdown directly:
-        </p>
-        <pre className="mt-3 rounded-md bg-slate-950 p-4 text-sm text-slate-50">
+        <div className="mt-5 flex items-center gap-2 font-medium">
+          <span aria-hidden="true" className="flex">
+            <Icon name="image" size={16} />
+          </span>
+          {t('help.images')}
+        </div>
+        <p className="ds-muted mt-2 text-sm">{t('help.imagesHint')}</p>
+        <pre className="mt-3 overflow-x-auto rounded-md border border-[color:var(--ds-code-border)] bg-[color:var(--ds-code-surface)] p-4 font-mono text-xs text-[color:var(--ds-text)]">
           {'![alt text](data:image/png;base64,...)'}
         </pre>
       </div>
@@ -3174,6 +3328,7 @@ function ShortcutInput({
   onChange: (shortcut: string) => void;
 }) {
   const [isRecording, setIsRecording] = React.useState(false);
+  const { t } = useI18n();
 
   React.useEffect(() => {
     if (!isRecording) {
@@ -3207,8 +3362,8 @@ function ShortcutInput({
   return (
     <div className="flex items-center justify-between gap-4">
       <div>
-        <div className="capitalize text-sm font-medium text-slate-800">{action}</div>
-        <div className="text-xs text-slate-500">{shortcutHelpText(action)}</div>
+        <div className="ds-text text-sm font-medium capitalize">{t(shortcutLabelKeys[action])}</div>
+        <div className="ds-muted text-xs">{t(shortcutHelpKeys[action])}</div>
       </div>
       <button
         className={`${isRecording ? 'primary-button' : 'secondary-button'} min-w-40 justify-start font-mono`}
@@ -3216,43 +3371,9 @@ function ShortcutInput({
         onBlur={() => setIsRecording(false)}
         data-shortcut-recorder={isRecording ? 'true' : 'false'}
       >
-        {isRecording ? 'Press keys...' : value}
+        {isRecording ? t('settings.recording') : value}
       </button>
     </div>
-  );
-}
-
-function Page({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="app-page flex min-h-0 flex-1 flex-col">
-      <PageHeader title={title} subtitle={subtitle} />
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">{children}</div>
-    </div>
-  );
-}
-
-function PageHeader({
-  title,
-  subtitle,
-  children,
-}: {
-  title?: string;
-  subtitle?: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <header className="app-page-header border-b px-6 py-4">
-      {children ?? <h1 className="text-lg font-semibold tracking-normal text-slate-950">{title}</h1>}
-      {subtitle ? <p className="mt-1 text-xs text-slate-500">{subtitle}</p> : null}
-    </header>
   );
 }
 
@@ -3270,6 +3391,68 @@ const markdownRemarkPlugins: NonNullable<React.ComponentProps<typeof ReactMarkdo
 const markdownRehypePlugins: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [
   [rehypeHighlight, { detect: false, ignoreMissing: true }],
 ];
+
+/**
+ * Rehype plugin that wraps occurrences of `query` in plain text with <mark className="find-hl">.
+ * Runs after rehype-highlight so code-block text is left untouched.
+ */
+function findHighlightRehypePlugin(query: string) {
+  const pattern = query ? new RegExp(`(${escapeRegExp(query)})`, 'gi') : null;
+
+  return () => {
+    return (tree: Root) => {
+      if (!pattern) {
+        return;
+      }
+
+      visit(tree, 'text', (node, index, parent) => {
+        if (
+          !parent ||
+          index === undefined ||
+          typeof node.value !== 'string' ||
+          !parent.children ||
+          index < 0
+        ) {
+          return;
+        }
+
+        const parts = node.value.split(pattern);
+        if (parts.length <= 1) {
+          return;
+        }
+
+        const replacement: Array<
+          | { type: 'text'; value: string }
+          | {
+              type: 'element';
+              tagName: 'mark';
+              properties: { className: string[] };
+              children: Array<{ type: 'text'; value: string }>;
+            }
+        > = [];
+
+        parts.forEach((part, partIndex) => {
+          if (!part) {
+            return;
+          }
+          replacement.push(
+            partIndex % 2 === 1
+              ? {
+                  type: 'element',
+                  tagName: 'mark',
+                  properties: { className: ['find-hl'] },
+                  children: [{ type: 'text', value: part }],
+                }
+              : { type: 'text', value: part },
+          );
+        });
+
+        parent.children.splice(index, 1, ...replacement);
+        return index + replacement.length;
+      });
+    };
+  };
+}
 
 function markdownCodeLanguage(node?: ExtraProps['node']) {
   const codeChild = node?.children.find((child) => child.type === 'element' && child.tagName === 'code');
@@ -3301,6 +3484,7 @@ function markdownNodeText(node?: ExtraProps['node'] | MarkdownAstNode): string {
 }
 
 function MarkdownCodeBlock({ node, children, ...props }: React.ComponentProps<'pre'> & ExtraProps) {
+  const { t } = useI18n();
   const language = markdownCodeLanguage(node);
   const [copied, setCopied] = React.useState(false);
 
@@ -3335,10 +3519,12 @@ function MarkdownCodeBlock({ node, children, ...props }: React.ComponentProps<'p
           type="button"
           className="markdown-code-block-copy"
           onClick={copyCode}
-          aria-label={copied ? 'Code copied' : 'Copy code block'}
+          aria-label={copied ? t('code.copiedLabel') : t('code.copyLabel')}
         >
-          <Copy aria-hidden="true" className="h-3 w-3" />
-          {copied ? 'Copied' : 'Copy'}
+          <span aria-hidden="true" className="flex">
+            <Icon name={copied ? 'check' : 'copy'} size={14} />
+          </span>
+          {copied ? t('code.copied') : t('code.copy')}
         </button>
       </div>
       <pre {...props} tabIndex={0}>
@@ -3348,35 +3534,126 @@ function MarkdownCodeBlock({ node, children, ...props }: React.ComponentProps<'p
   );
 }
 
+/** Rendered markdown body. Task checkboxes become clickable when `onTodoToggle` is given. */
 function MarkdownContent({
   content,
-  enableTaskCheckboxes = false,
+  onTodoToggle,
+  findQuery,
+  activeIndex,
+  onMatchCount,
 }: {
   content: string;
-  enableTaskCheckboxes?: boolean;
+  onTodoToggle?: (occurrenceIndex: number, done: boolean) => void;
+  findQuery?: string;
+  activeIndex?: number;
+  onMatchCount?: (count: number) => void;
 }) {
-  const components = enableTaskCheckboxes
-    ? {
-        img: MarkdownImageElement,
-        pre: MarkdownCodeBlock,
-        input: ({
-          node: _node,
-          disabled: _disabled,
-          ...props
-        }: React.ComponentProps<'input'> & { node?: unknown }) => <input {...props} disabled={false} />,
+  const handleTodoChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLDivElement>) => {
+      const target = event.target;
+      if (!onTodoToggle || !(target instanceof HTMLInputElement) || target.type !== 'checkbox') {
+        return;
       }
-    : { img: MarkdownImageElement, pre: MarkdownCodeBlock };
+
+      const checkboxes = Array.from(
+        event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+      );
+      const occurrenceIndex = checkboxes.indexOf(target);
+      if (occurrenceIndex >= 0) {
+        onTodoToggle(occurrenceIndex, target.checked);
+      }
+    },
+    [onTodoToggle],
+  );
+
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const findQueryNormalized = findQuery?.trim().toLowerCase() ?? '';
+
+  const components = {
+    img: MarkdownImageElement,
+    pre: MarkdownCodeBlock,
+    ...(onTodoToggle
+      ? {
+          input: ({
+            node: _node,
+            checked: _checked,
+            disabled: _disabled,
+            ...props
+          }: React.ComponentProps<'input'> & { node?: unknown; checked?: boolean }) => (
+            <input {...props} type="checkbox" defaultChecked={_checked} disabled={false} />
+          ),
+        }
+      : {}),
+  };
+
+  const findHighlightPlugin = React.useMemo(
+    () => findHighlightRehypePlugin(findQueryNormalized),
+    [findQueryNormalized],
+  );
+
+  React.useEffect(() => {
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+
+    const marks = Array.from(root.querySelectorAll<HTMLElement>('mark.find-hl'));
+    onMatchCount?.(marks.length);
+    for (const mark of marks) {
+      mark.classList.remove('is-current');
+    }
+    const active = marks[activeIndex ?? -1];
+    if (active) {
+      active.classList.add('is-current');
+      active.scrollIntoView({ block: 'center' });
+    }
+  }, [activeIndex, content, findQuery, onMatchCount]);
 
   return (
-    <div className="markdown-content">
+    <div ref={rootRef} className="markdown-content" onChange={onTodoToggle ? handleTodoChange : undefined}>
       <ReactMarkdown
         remarkPlugins={markdownRemarkPlugins}
-        rehypePlugins={markdownRehypePlugins}
+        rehypePlugins={[...markdownRehypePlugins, findHighlightPlugin]}
         urlTransform={markdownUrlTransform}
         components={components}
       >
         {content}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+/** Read-only note body with an empty hint, used by the detail and pinned windows. */
+function NoteBodyPreview({
+  content,
+  emptyMessage,
+  onDoubleClick,
+  onTodoToggle,
+  findQuery,
+  activeIndex,
+  onMatchCount,
+}: {
+  content: string;
+  emptyMessage: string;
+  onDoubleClick?: () => void;
+  onTodoToggle?: (occurrenceIndex: number, done: boolean) => void;
+  findQuery?: string;
+  activeIndex?: number;
+  onMatchCount?: (count: number) => void;
+}) {
+  return (
+    <div className="pinned-note-preview min-h-full" onDoubleClick={onDoubleClick}>
+      {content.trim() ? (
+        <MarkdownContent
+          content={content}
+          onTodoToggle={onTodoToggle}
+          findQuery={findQuery}
+          activeIndex={activeIndex}
+          onMatchCount={onMatchCount}
+        />
+      ) : (
+        <div className="pinned-note-empty">{emptyMessage}</div>
+      )}
     </div>
   );
 }
@@ -3500,59 +3777,7 @@ function MarkdownImageElement({ src, alt }: { src?: string; alt?: string }) {
   return <img alt={alt ?? ''} src={attachmentSrc} loading="lazy" />;
 }
 
-function EmptyMessage({
-  title,
-  message,
-  icon: Icon = NotebookText,
-  actionLabel,
-  onAction,
-}: {
-  title: string;
-  message: string;
-  icon?: React.ComponentType<{ className?: string }>;
-  actionLabel?: string;
-  onAction?: () => void;
-}) {
-  return (
-    <div className="empty-state rounded-lg p-8 text-center">
-      <div className="empty-state-icon mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg">
-        <Icon className="h-5 w-5" />
-      </div>
-      <div className="font-medium text-slate-900">{title}</div>
-      <div className="mt-1 text-sm text-slate-500">{message}</div>
-      {actionLabel && onAction ? (
-        <button type="button" className="primary-button mt-5" onClick={onAction}>
-          <FilePenLine className="h-4 w-4" />
-          {actionLabel}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function useFilteredTodos() {
-  const query = useAppStore((state) => state.query.trim().toLowerCase());
-  const todos = useAppStore((state) => state.todos);
-  const notes = useAppStore((state) => state.notes);
-
-  return React.useMemo(() => {
-    if (!query) return todos;
-    return todos.filter((todo) => {
-      if (todo.title.toLowerCase().includes(query)) {
-        return true;
-      }
-
-      const noteTitle = notes.find((note) => note.id === todo.noteId)?.title?.toLowerCase() ?? '';
-      return noteTitle.includes(query);
-    });
-  }, [notes, query, todos]);
-}
-
 function formatDate(value: string) {
-  return formatCompactDateTime(value);
-}
-
-function formatTime(value: string) {
   return formatCompactDateTime(value);
 }
 
@@ -3562,41 +3787,6 @@ function formatCompactDateTime(value: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
     date.getHours(),
   )}:${pad(date.getMinutes())}`;
-}
-
-function groupNotesByDate(notes: ReturnType<typeof useAppStore.getState>['notes']) {
-  const sorted = [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const groups = new Map<string, typeof sorted>();
-
-  for (const note of sorted) {
-    const label = dateGroupLabel(note.updatedAt);
-    groups.set(label, [...(groups.get(label) ?? []), note]);
-  }
-
-  return Array.from(groups.entries()).map(([label, groupNotes]) => ({
-    label,
-    notes: groupNotes,
-  }));
-}
-
-function dateGroupLabel(value: string) {
-  const date = new Date(value);
-  const today = new Date();
-  const yesterday = new Date();
-  yesterday.setDate(today.getDate() - 1);
-
-  if (isSameDate(date, today)) return 'Today';
-  if (isSameDate(date, yesterday)) return 'Yesterday';
-
-  return new Intl.DateTimeFormat(undefined, {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  }).format(date);
-}
-
-function isSameDate(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
 function matchesShortcut(event: KeyboardEvent, shortcut: string) {
@@ -3641,6 +3831,10 @@ function shortcutFromKeyboardEvent(event: KeyboardEvent) {
   if (event.altKey) parts.push('Alt');
   parts.push(key);
   return parts.join('+');
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function normalizeKey(key: string) {
@@ -3694,57 +3888,26 @@ function normalizeShortcutLabel(shortcut: string) {
     .join('+');
 }
 
-function shortcutHelpText(action: ShortcutAction) {
-  switch (action) {
-    case 'new':
-      return 'Open a new note composer.';
-    case 'save':
-      return 'Save the current new or edited content.';
-    case 'edit':
-      return 'Edit the current note content.';
-    case 'delete':
-      return 'Delete the current note.';
-    case 'cancel':
-      return 'Cancel the current edit or close the current composer.';
-  }
-}
+const shortcutLabelKeys: Record<ShortcutAction, MessageKey> = {
+  new: 'shortcut.new.label',
+  save: 'shortcut.save.label',
+  edit: 'shortcut.edit.label',
+  delete: 'shortcut.delete.label',
+  cancel: 'shortcut.cancel.label',
+  capture: 'shortcut.capture.label',
+};
+
+const shortcutHelpKeys: Record<ShortcutAction, MessageKey> = {
+  new: 'shortcut.new.help',
+  save: 'shortcut.save.help',
+  edit: 'shortcut.edit.help',
+  delete: 'shortcut.delete.help',
+  cancel: 'shortcut.cancel.help',
+  capture: 'shortcut.capture.help',
+};
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function confirmDeletion(message: string) {
-  if (!isTauriRuntime()) {
-    return window.confirm(message);
-  }
-
-  return askDialog(message, {
-    title: 'Confirm deletion',
-    kind: 'warning',
-    okLabel: 'Delete',
-    cancelLabel: 'Cancel',
-  });
-}
-
-function summarizeNotePreview(
-  noteId: string,
-  entries: ReturnType<typeof useAppStore.getState>['entries'],
-  todos: ReturnType<typeof useAppStore.getState>['todos'],
-) {
-  const noteEntries = entries.filter((entry) => entry.noteId === noteId);
-  const firstTextEntry = noteEntries.find((entry) => entry.content.trim());
-  const todoCount = todos.filter((todo) => todo.noteId === noteId).length;
-
-  if (!firstTextEntry) {
-    return todoCount > 0 ? `${todoCount} ToDo${todoCount === 1 ? '' : 's'}` : 'No content yet.';
-  }
-
-  const preview = compactPreviewText(firstTextEntry.content);
-  if (!preview) {
-    return todoCount > 0 ? `${todoCount} ToDo${todoCount === 1 ? '' : 's'}` : 'No content yet.';
-  }
-
-  return todoCount > 0 ? `${preview} · ${todoCount} ToDo${todoCount === 1 ? '' : 's'}` : preview;
 }
 
 function compactPreviewText(content: string) {
@@ -3757,22 +3920,86 @@ function compactPreviewText(content: string) {
     .slice(0, 140);
 }
 
+/** Split the text on case-insensitive `query` and wrap the matched parts in <mark class="find-hl">. */
+function highlightTextMatches(text: string, query: string, keyPrefix?: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized || !text) {
+    return text;
+  }
+  const parts = text.split(new RegExp(`(${escapeRegExp(normalized)})`, 'gi'));
+  return parts.map((part, index) =>
+    index % 2 === 1 ? (
+      <mark key={`${keyPrefix ?? 'hl'}-${index}`} className="find-hl">
+        {part}
+      </mark>
+    ) : (
+      part
+    ),
+  );
+}
+
 function normalizeImportedSnapshot(value: Partial<AppStateSnapshot>): AppStateSnapshot {
   return {
     activeSection: value.activeSection ?? 'notes',
     selectedNoteId: value.selectedNoteId,
     query: value.query ?? '',
     searchFocused: false,
-    notes: Array.isArray(value.notes) ? value.notes : [],
-    entries: Array.isArray(value.entries) ? value.entries : [],
-    todos: Array.isArray(value.todos) ? value.todos : [],
-    recentNoteIds: Array.isArray(value.recentNoteIds) ? value.recentNoteIds : [],
+    notes: Array.isArray(value.notes) ? value.notes.map(normalizeImportedNote) : [],
+    todos: Array.isArray(value.todos) ? value.todos.map(normalizeImportedTodo) : [],
+    recentNoteIds: (Array.isArray(value.recentNoteIds)
+      ? value.recentNoteIds.filter((item): item is string => typeof item === 'string')
+      : []
+    ).slice(0, 10),
     shortcuts: {
       ...defaultShortcuts,
       ...normalizeImportedShortcuts(value.shortcuts),
     },
-    theme: value.theme ?? 'light',
+    theme: value.theme === 'dark' ? 'dark' : 'light',
+    locale: value.locale === 'zh' ? 'zh' : 'en',
     deletedStack: Array.isArray(value.deletedStack) ? value.deletedStack : [],
+  };
+}
+
+const nowIso = () => new Date().toISOString();
+
+/**
+ * A hand-edited or cross-version backup may omit required note fields. Fill in
+ * safe defaults so every import round-trips into the store without crashing
+ * the renderers (which call `updatedAt.localeCompare`, `slice`, etc.).
+ */
+function normalizeImportedNote(value: unknown): Note {
+  const raw = (value ?? {}) as Partial<Note> & Record<string, unknown>;
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : createId('note'),
+    title:
+      typeof raw.title === 'string'
+        ? raw.title
+        : titleFromFirstLine(raw.content as string) || 'Untitled Note',
+    content: typeof raw.content === 'string' ? raw.content : '',
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : nowIso(),
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : nowIso(),
+    archivedAt: typeof raw.archivedAt === 'string' ? raw.archivedAt : undefined,
+  };
+}
+
+function normalizeImportedTodo(value: unknown): Todo {
+  const raw = (value ?? {}) as Partial<Todo> & Record<string, unknown>;
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : createId('todo'),
+    noteId: typeof raw.noteId === 'string' ? raw.noteId : undefined,
+    title: typeof raw.title === 'string' ? raw.title : 'Untitled Todo',
+    status: raw.status === 'done' ? 'done' : 'todo',
+    source: raw.source === 'note' ? 'note' : 'standalone',
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : nowIso(),
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : nowIso(),
+    completedAt: typeof raw.completedAt === 'string' ? raw.completedAt : undefined,
+    start: typeof raw.start === 'string' ? raw.start : undefined,
+    days: typeof raw.days === 'number' && Number.isFinite(raw.days) ? Math.max(1, raw.days) : undefined,
+    due: typeof raw.due === 'string' ? raw.due : undefined,
+    priority:
+      raw.priority === 'low' || raw.priority === 'medium' || raw.priority === 'high'
+        ? raw.priority
+        : undefined,
   };
 }
 
