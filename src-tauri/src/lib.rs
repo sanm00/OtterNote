@@ -2546,11 +2546,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let (root_state, _, deleted_stack) = split_app_state(&persisted);
-        let note_bundles = read_note_bundles(
-            &notes_dir_for_storage_root(&storage.root),
-            &HashSet::new(),
-        )
-        .unwrap();
+        let note_bundles =
+            read_note_bundles(&notes_dir_for_storage_root(&storage.root), &HashSet::new()).unwrap();
         let merged = merge_root_state_with_notes(root_state, note_bundles, deleted_stack);
 
         let ids = merged["state"]["todos"]
