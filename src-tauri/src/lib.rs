@@ -910,12 +910,12 @@ fn bootstrap_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
 fn debug_bootstrapped(config_dir: PathBuf) -> PathBuf {
     #[cfg(debug_assertions)]
     {
-        return config_dir.with_file_name(format!(
+        config_dir.with_file_name(format!(
             "{}.dev",
             config_dir
                 .file_name()
                 .map_or(String::new(), |name| name.to_string_lossy().into_owned())
-        ));
+        ))
     }
     #[cfg(not(debug_assertions))]
     config_dir
