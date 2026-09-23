@@ -1,6 +1,6 @@
 [package]
 name = "otter-note"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lightweight local-first notes and todo app"
 authors = ["OtterNote"]
 edition = "2021"
