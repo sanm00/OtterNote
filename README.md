@@ -14,18 +14,41 @@ Local-first notes and ToDo app with a two-column workspace. Notes, attachments, 
 
 ## Features
 
-- Two-column workspace with sidebar navigation and content area
-- Notes list, note detail, timeline, ToDo list, images, settings, and help
-- Markdown editing and preview
-- Inline ToDo parsing from note content
-- Notes grouped by time in the timeline view
-- Image upload through the file picker or paste
-- Separate preview and original image storage on desktop
-- Note export to Markdown
+- **Plan / Notes / Review** three-view workspace with sidebar navigation
+- Weekly planner with scheduled and prioritized ToDos
+- Review recap: notes created, ToDos completed, and a weekly bar chart
+- Markdown editing and live preview with syntax-highlighted code blocks
+- Inline `- [ ]` ToDo parsing from note content
+- Tag lines (`#tag`) and wiki links (`[[Title]]`) that build backlinks
 - Global search across notes and ToDo content
+- Image upload through the file picker or paste, with preview and original
+  storage on desktop
+- Note export to Markdown and JSON backup import/export with a file picker
 - Light and dark themes
-- Keyboard shortcuts with custom configuration
+- Keyboard shortcuts with custom configuration (⌘N, ⌘T, ⌘S, ⌘E, …)
 - Pinned note windows
+
+## Screenshots
+
+**Plan view** (light) — weekly planner with the quick ToDo bar on the left.
+
+![Plan view](docs/screenshots/plan.png)
+
+**Notes & editor** — notes list with Markdown editing, code blocks, tags, and backlinks.
+
+![Notes and editor](docs/screenshots/notes.png)
+
+**Review** (light) — weekly recap and bar chart of notes created and ToDos completed.
+
+![Review view](docs/screenshots/review.png)
+
+**Settings** — themes and keyboard shortcut configuration.
+
+![Settings](docs/screenshots/settings.png)
+
+**Dark theme** — the notes view in dark mode.
+
+![Dark theme](docs/screenshots/dark.png)
 
 ## Install
 
