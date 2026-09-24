@@ -816,6 +816,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
       if (event.key === 'Escape') {
         event.preventDefault();
         setFindOpen(false);
+        setFindQuery('');
         return;
       }
       if (event.key === 'Enter') {
@@ -842,7 +843,7 @@ function NoteDetail({ noteId }: { noteId: string }) {
     setFindIndex((current) => Math.min(current, findCount - 1));
   }, [findCount]);
 
-  const normalizedFindQuery = findQuery.trim();
+  const normalizedFindQuery = findOpen ? findQuery.trim() : '';
 
   React.useEffect(() => {
     setTitleDraft(note?.title ?? '');
@@ -1129,7 +1130,10 @@ function NoteDetail({ noteId }: { noteId: string }) {
           <button
             type="button"
             className="find-bar-btn find-bar-close"
-            onClick={() => setFindOpen(false)}
+            onClick={() => {
+              setFindOpen(false);
+              setFindQuery('');
+            }}
             aria-label={t('find.close')}
             title={t('find.close')}
           >
@@ -3466,6 +3470,16 @@ function markdownCodeLanguage(node?: ExtraProps['node']) {
   return language ? language.slice('language-'.length) : '';
 }
 
+function markdownNodeHasClass(node: ExtraProps['node'], className: string) {
+  const value = node?.properties?.className;
+  const classes = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : typeof value === 'string'
+      ? value.split(/\s+/)
+      : [];
+  return classes.includes(className);
+}
+
 function markdownNodeText(node?: ExtraProps['node'] | MarkdownAstNode): string {
   if (!node || typeof node !== 'object') {
     return '';
@@ -3534,6 +3548,25 @@ function MarkdownCodeBlock({ node, children, ...props }: React.ComponentProps<'p
   );
 }
 
+/**
+ * Task list items use a two-column grid (checkbox + text). Keep every child after
+ * the checkbox in one inline flow so injected nodes such as find-highlight `<mark>`
+ * or `<strong>` cannot land in the narrow checkbox column.
+ */
+function MarkdownListItem({ node, children, ...props }: React.ComponentProps<'li'> & ExtraProps) {
+  if (!markdownNodeHasClass(node, 'task-list-item')) {
+    return <li {...props}>{children}</li>;
+  }
+
+  const [checkbox, ...rest] = React.Children.toArray(children);
+  return (
+    <li {...props}>
+      {checkbox}
+      <span className="task-list-item-content">{rest}</span>
+    </li>
+  );
+}
+
 /** Rendered markdown body. Task checkboxes become clickable when `onTodoToggle` is given. */
 function MarkdownContent({
   content,
@@ -3571,6 +3604,7 @@ function MarkdownContent({
 
   const components = {
     img: MarkdownImageElement,
+    li: MarkdownListItem,
     pre: MarkdownCodeBlock,
     ...(onTodoToggle
       ? {

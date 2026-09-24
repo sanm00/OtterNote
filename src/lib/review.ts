@@ -44,7 +44,7 @@ export type BuildRecapInput = {
   range: DateRange;
 };
 
-function localDay(value: string): string {
+export function localDay(value: string): string {
   const date = new Date(value);
   const pad = (num: number) => String(num).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;

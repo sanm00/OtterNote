@@ -16,7 +16,7 @@ import {
 import { downloadTextFile } from '../lib/export-file';
 import type { MessageKey } from '../lib/i18n';
 import { useI18n } from '../lib/i18n';
-import { buildRecap, buildRecapMarkdown, buildStats, type RecapEventKind } from '../lib/review';
+import { buildRecap, buildRecapMarkdown, buildStats, localDay, type RecapEventKind } from '../lib/review';
 import { isTauriRuntime, writeExportFile } from '../storage';
 import { useAppStore } from '../store';
 
@@ -104,7 +104,6 @@ export function ReviewView() {
     [preset, customStart, customEnd],
   );
 
-  const notesById = useMemo(() => new Map(notes.map((note) => [note.id, note])), [notes]);
   const recap = useMemo(() => buildRecap({ notes, todos, range }), [notes, todos, range]);
   const stats = useMemo(() => buildStats({ notes, todos, range }), [notes, todos, range]);
   const activeDays = recap.days.filter((day) => day.events.length > 0);
@@ -350,15 +349,20 @@ export function ReviewView() {
                         <div className="ds-rec-detail">
                           {event.kind === 'completed' ? (
                             <>
+                              {event.due ? (
+                                <span className="planning-chip">
+                                  {t('todos.plannedOn', { date: formatDayHeading(event.due, locale) })}
+                                </span>
+                              ) : null}
                               <span className="planning-chip">
-                                {t('todos.completedOn', {
-                                  date: formatDayHeading(event.at.slice(0, 10), locale),
+                                {t('todos.actuallyCompletedOn', {
+                                  date: formatDayHeading(localDay(event.at), locale),
                                 })}
                               </span>
                               {event.overdue && event.due ? (
                                 <span className="planning-chip planning-chip-late">
                                   {t('todos.overdueBy', {
-                                    n: Math.abs(daysBetween(event.due, event.at.slice(0, 10))),
+                                    n: daysBetween(event.due, localDay(event.at)),
                                   })}
                                 </span>
                               ) : null}
@@ -373,7 +377,8 @@ export function ReviewView() {
                       </div>
                       {event.noteId ? (
                         <button type="button" className="ds-rec-src" onClick={() => openNote(event.noteId!)}>
-                          {notesById.get(event.noteId)?.title || t('todos.sourceNote')}
+                          <Icon name="note" size={12} />
+                          {t('todos.sourceNote')}
                         </button>
                       ) : null}
                     </div>,
